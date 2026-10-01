@@ -1,0 +1,2 @@
+Errors encountered validating Jenkinsfile:
+WorkflowScript: 8: expecting '}', found '' @ line 8, column 1.

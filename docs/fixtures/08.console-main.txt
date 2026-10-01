@@ -1,0 +1,73 @@
+Branch indexing
+ > git rev-parse --resolve-git-dir /var/jenkins_home/caches/git-7ddb566eeae753d4f3d5abf1709058de/.git # timeout=10
+Setting origin to https://github.com/danilgorbunofff/stagecraft-day0-fixture
+ > git config remote.origin.url https://github.com/danilgorbunofff/stagecraft-day0-fixture # timeout=10
+Fetching origin...
+Fetching upstream changes from origin
+ > git --version # timeout=10
+ > git --version # 'git version 2.47.3'
+ > git config --get remote.origin.url # timeout=10
+ > git fetch --no-tags --force --progress -- origin +refs/heads/*:refs/remotes/origin/* # timeout=10
+Seen branch in repository origin/feature/ORD-214
+Seen branch in repository origin/main
+Seen 2 remote branches
+Obtained Jenkinsfile from 4fc2824ae27c0822dd7b66bba17074a7204f9684
+[Pipeline] Start of Pipeline
+[Pipeline] node
+Running on Jenkins in /var/jenkins_home/workspace/multibranch-demo_main
+[Pipeline] {
+[Pipeline] stage
+[Pipeline] { (Declarative: Checkout SCM)
+[Pipeline] checkout
+Selected Git installation does not exist. Using Default
+The recommended git tool is: NONE
+No credentials specified
+Cloning the remote Git repository
+Cloning with configured refspecs honoured and without tags
+Cloning repository https://github.com/danilgorbunofff/stagecraft-day0-fixture
+ > git init /var/jenkins_home/workspace/multibranch-demo_main # timeout=10
+Fetching upstream changes from https://github.com/danilgorbunofff/stagecraft-day0-fixture
+ > git --version # timeout=10
+ > git --version # 'git version 2.47.3'
+ > git fetch --no-tags --force --progress -- https://github.com/danilgorbunofff/stagecraft-day0-fixture +refs/heads/*:refs/remotes/origin/* # timeout=10
+ > git config remote.origin.url https://github.com/danilgorbunofff/stagecraft-day0-fixture # timeout=10
+ > git config --add remote.origin.fetch +refs/heads/*:refs/remotes/origin/* # timeout=10
+Avoid second fetch
+Checking out Revision 4fc2824ae27c0822dd7b66bba17074a7204f9684 (main)
+ > git config core.sparsecheckout # timeout=10
+ > git checkout -f 4fc2824ae27c0822dd7b66bba17074a7204f9684 # timeout=10
+Commit message: "Day-0 fixture: 3-stage pipeline, third stage fails"
+First time build. Skipping changelog.
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] withEnv
+[Pipeline] {
+[Pipeline] stage
+[Pipeline] { (Checkout)
+[Pipeline] echo
+Stagecraft Day-0: checkout
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Build)
+[Pipeline] echo
+Stagecraft Day-0: build
+[Pipeline] sh
++ echo compiling OrderService.java
+compiling OrderService.java
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Deploy to staging)
+[Pipeline] echo
+Stagecraft Day-0: deploying to staging
+[Pipeline] error
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] }
+[Pipeline] // withEnv
+[Pipeline] }
+[Pipeline] // node
+[Pipeline] End of Pipeline
+ERROR: Deploy failed: Discount table is empty for region EU
+Finished: FAILURE

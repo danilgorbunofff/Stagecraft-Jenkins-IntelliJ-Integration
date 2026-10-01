@@ -1,0 +1,9 @@
+Started by user admin
+Running as SYSTEM
+Building in workspace /var/jenkins_home/workspace/freestyle-fail
+[freestyle-fail] $ /bin/sh -xe /tmp/jenkins3095095440288248519.sh
++ echo starting hard work
+starting hard work
++ exit 1
+Build step 'Execute shell' marked build as failure
+Finished: FAILURE

@@ -1,0 +1,22 @@
+{
+  "stageCount": 2,
+  "stages": [
+    {
+      "name": "Build",
+      "firstLine": 7,
+      "lastLine": 10,
+      "logLines": 4
+    },
+    {
+      "name": "Ship",
+      "firstLine": 13,
+      "lastLine": 16,
+      "logLines": 4
+    }
+  ],
+  "diagnostics": {
+    "stackLeftAtEnd": 0,
+    "endMarkerSeen": true,
+    "isPipelineLog": true
+  }
+}

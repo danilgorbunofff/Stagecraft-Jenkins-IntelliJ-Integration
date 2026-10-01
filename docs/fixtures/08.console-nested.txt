@@ -1,0 +1,9 @@
+Started by user admin
+Running as SYSTEM
+Building in workspace /var/jenkins_home/workspace/stagecraft/deep/nested-freestyle
+[nested-freestyle] $ /bin/sh -xe /tmp/jenkins5616657689016473827.sh
++ echo starting hard work
+starting hard work
++ exit 1
+Build step 'Execute shell' marked build as failure
+Finished: FAILURE

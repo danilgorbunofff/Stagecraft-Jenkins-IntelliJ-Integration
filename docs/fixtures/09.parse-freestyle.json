@@ -1,0 +1,9 @@
+{
+  "stageCount": 0,
+  "stages": [],
+  "diagnostics": {
+    "stackLeftAtEnd": 0,
+    "endMarkerSeen": false,
+    "isPipelineLog": false
+  }
+}

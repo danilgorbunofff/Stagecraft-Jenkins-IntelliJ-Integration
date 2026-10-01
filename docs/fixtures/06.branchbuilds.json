@@ -1,0 +1,1 @@
+{"_class":"org.jenkinsci.plugins.workflow.job.WorkflowJob","builds":[{"_class":"org.jenkinsci.plugins.workflow.job.WorkflowRun","duration":11157,"number":1,"result":"FAILURE","timestamp":1790863881145,"url":"http://localhost:18080/job/multibranch-demo/job/main/1/"}]}

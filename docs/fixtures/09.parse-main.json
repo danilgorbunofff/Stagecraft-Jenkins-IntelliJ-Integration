@@ -1,0 +1,34 @@
+{
+  "stageCount": 4,
+  "stages": [
+    {
+      "name": "Declarative: Checkout SCM",
+      "firstLine": 20,
+      "lastLine": 41,
+      "logLines": 22
+    },
+    {
+      "name": "Checkout",
+      "firstLine": 46,
+      "lastLine": 49,
+      "logLines": 4
+    },
+    {
+      "name": "Build",
+      "firstLine": 52,
+      "lastLine": 58,
+      "logLines": 7
+    },
+    {
+      "name": "Deploy to staging",
+      "firstLine": 61,
+      "lastLine": 65,
+      "logLines": 5
+    }
+  ],
+  "diagnostics": {
+    "stackLeftAtEnd": 0,
+    "endMarkerSeen": true,
+    "isPipelineLog": true
+  }
+}

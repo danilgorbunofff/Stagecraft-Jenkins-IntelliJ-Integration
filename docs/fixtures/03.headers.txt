@@ -1,0 +1,21 @@
+HTTP/1.1 200 OK
+Server: Jetty(12.1.5)
+Date: Thu, 01 Oct 2026 14:12:08 GMT
+Vary: Accept-Encoding
+X-Content-Type-Options: nosniff
+Content-Security-Policy-Report-Only: base-uri 'none'; default-src 'self'; form-action 'self'; frame-ancestors 'self'; img-src 'self' data:; script-src 'report-sample' 'self' usage.jenkins.io; style-src 'report-sample' 'self' 'unsafe-inline'; report-to content-security-policy; report-uri http://localhost:18080/content-security-policy-reporting-endpoint/WJyHbHnM4tuNjHv5pXjJCe6bFH6z7ciFOR7xgBqiDjA=:YWRtaW4=:aHVkc29uLm1vZGVsLkFsbFZpZXc=:
+Content-Type: text/html;charset=utf-8
+Expires: Thu, 01 Jan 1970 00:00:00 GMT
+Cache-Control: no-cache,no-store,must-revalidate
+X-Hudson-Theme: default
+Referrer-Policy: same-origin
+Cross-Origin-Opener-Policy: same-origin
+Set-Cookie: JSESSIONID.a1e23cc5=node0j4v4b5r6fk0irmmyd4xq6pq44.node0; Path=/; HttpOnly; SameSite=Lax
+X-Hudson: 1.395
+X-Jenkins: 2.541.3
+X-Jenkins-Session: bdac80ca
+X-Frame-Options: sameorigin
+Reporting-Endpoints: content-security-policy: http://localhost:18080/content-security-policy-reporting-endpoint/WJyHbHnM4tuNjHv5pXjJCe6bFH6z7ciFOR7xgBqiDjA=:YWRtaW4=:aHVkc29uLm1vZGVsLkFsbFZpZXc=:
+X-Instance-Identity: MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAm4c42QriArNb8Qq/7eeDaXqDUZmq0xX4KSlfEb9UjAf/xsbdsRmBh3cCpAw6E/MQhmxZ8FLm/7t0hQQvmXB6XrBqHnBXwE6yg0GENI2Gk1dYDVHNZ/Zhc7hAWaJXRzUytxGReg/e5frdOpM+omHKBYDZmJnuXd56D5x2NUYrec7pdO2hkKtys3+oIpR53T01jb4t2vCv7V1Z/U3ftPinlFMcEaRyTDh3nUVD57LnO+//zc7ICaWfBV/qKlpSmx9nkqtUnYFGSI3pOtvb9A0SpSrSpECrInxgEcxgR3VFGdmJ0pMv/qsdgYTtXXULRiV+aiEM1glqLSSl5qH+wFuA5wIDAQAB
+Transfer-Encoding: chunked
+
