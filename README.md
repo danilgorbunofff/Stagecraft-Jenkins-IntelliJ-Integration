@@ -4,8 +4,9 @@
 > **Name on the Marketplace listing:** `Stagecraft • Jenkins Build & Log Viewer`
 > **Product code:** `PSTAGECRAFT` (candidate, not yet registered)
 > **Charter written:** 2026-10-01
-> **Status:** chartered, not started. No code written, no remote configured, nothing pushed.
-> **Method:** JetBrains Marketplace public API, Jenkins Update Center plugin API, and verbatim user reviews. Every integer in this document is an API's own returned value — none are estimates, none are made up.
+> **Status:** chartered; Day-0 gate executed 2026-10-01 — **PASS with deviations** ([`docs/day0-verification.md`](docs/day0-verification.md)). No product code written. The only code is the reference stage parser in [`tools/`](tools/). The Day-0 fixture repository is public on GitHub.
+> **Reviewed:** 2026-10-01. A strict review corrected several figures and the §9 technical design. Each corrected number states how it was computed.
+> **Method:** JetBrains Marketplace public API, Jenkins Update Center plugin API, and verbatim user reviews. Every integer in this document is an API's own returned value, or is computed from those values with the computation shown. None are made up. Scenario rows in §12.3 marked "assumed" are assumptions, labelled as such.
 
 **In one sentence:** Stagecraft is a JetBrains IDE plugin that puts **one Jenkins build — the one you just triggered —** inside the IDE: its stages, its per-stage console logs, its test results, and a clickable stack trace that jumps to source code.
 
@@ -50,9 +51,14 @@ It does not depend on it. Jenkins' own console output carries stage boundaries n
 [Pipeline] // stage
 ```
 
-A client-side parser was written against a **real captured Jenkins console log** (237 lines) and recovered **3 stages with correct boundaries and correct line counts**, using nothing but the console text. The marker `[Pipeline] // stage` appears in **4,424 files** on GitHub — it is the universal format, not an edge case.
+A client-side parser was written against a **real captured Jenkins console log** (237 lines) and recovered **3 stages with correct boundaries and correct line counts**, using nothing but the console text. The Day-0 gate then reproduced this on a live Jenkins 2.541.3, with and without `pipeline-stage-view`. The marker `[Pipeline] // stage` appears in **4,424 files** on GitHub — it is the universal format, not an edge case.
 
-**Therefore: per-stage logs work on 100% of Jenkins servers via `/consoleText` alone.** The `stage-view` JSON API is a *progressive enhancement* used when present, never a requirement. See §9.3 for the parser and the proof.
+**Therefore: per-stage logs for sequential and nested stages work on 100% of Jenkins servers via `/consoleText` alone.** Two limits hold on that console-only path, and the product must state them rather than hide them:
+
+- **Stages inside `parallel`** are named, but their output is interleaved and carries no branch prefix, so it cannot be split per branch.
+- **Stage status is not in the console.** The failed stage is *inferred*, and labelled as inferred.
+
+The `stage-view` JSON API is a *progressive enhancement* used when present, never a requirement. It supplies exact statuses, failure messages and per-node logs. See §9.3 for the parser, the proof and the limits.
 
 ---
 
@@ -85,22 +91,22 @@ A client-side parser was written against a **real captured Jenkins console log**
 
 **What:** a JetBrains plugin (IntelliJ IDEA, PyCharm, WebStorm, GoLand, PhpStorm, RubyMine — anything on the IntelliJ Platform).
 
-**The object it models is a build, not a server.** It finds your Jenkins and your job from the project's **git remote**, shows the builds for **the branch you are on**, and opens the failed stage of the build you just triggered — logs, test results, clickable stack frames.
+**The object it models is a build, not a server.** You enter your Jenkins URL and API token once. From then on it finds your job from the project's **git remote**, shows the builds for **the branch you are on**, and opens the failed stage of the build you just triggered — logs, test results, clickable stack frames.
 
 **Why this space, in four integers:**
 
 | Evidence | Integer |
 |---|---|
-| Downloads across the top 11 third-party Jenkins plugins | **~970,000** |
-| Live **paid** Jenkins vendors, actively updated | **3** — `Jenkinsfile` 157,778 · `Jenkinsfile Pro` 29,625 · `CIclone` 13,204 |
+| Downloads across the top 14 third-party Jenkins plugins | **~969,000** |
+| Live **paid** Jenkins products, actively updated | **3** from 2 vendors — `Jenkinsfile` 157,778 · `Jenkinsfile Pro` 29,625 · `CIclone` 13,204 |
 | What the largest **paid** Jenkins plugin (157,778 DL) sells | **coloured text and autocomplete.** Nothing else. |
-| Plugins that render **Jenkins build logs** inside the IDE | **0** |
+| Plugins that render the log of **the build that ran on your branch** inside the IDE | **0** (two render logs at all: `CIclone`, partially; `PipelinePilot`, of its sandbox runs — §4.4) |
 
 **Why nobody has taken it, in one sentence:** every existing Jenkins plugin was architected around *"list the server's jobs"*, so all of them break the same way at enterprise scale — folders, multibranch jobs, thousands of jobs, several servers, CSRF, self-signed certificates — and none of them ever got as far as rendering the build log. The most-downloaded one, at **433,254 downloads**, says so in its own reviews.
 
 **How money is made:** JetBrains sells it. The plugin talks directly from the customer's IDE to the customer's own Jenkins server. **There is no server to host and no running cost.** JetBrains handles checkout, licensing, VAT, tax and processing, and pays the vendor **85%**. Target price **$29/year per user**, 30-day trial.
 
-**The honest downside, stated up front:** CI-in-IDE appears to convert worse than pull-request-review-in-IDE, and Stagecraft is the riskiest of the three parallel tracks for that reason. The full counter-signal is in §5.3. This is not hidden anywhere in this document.
+**The honest downside, stated up front:** the highest-volume CI-in-IDE plugin, which is freemium, draws far fewer reviews per download than pull-request-review-in-IDE. The one *paid* CI plugin measured comes within about 2.4× of PR review. Review density measures engagement, not payment, so this is a warning rather than a conversion rate. Stagecraft is still the riskiest of the three parallel tracks. The full counter-signal, corrected on review, is in §5.3. This is not hidden anywhere in this document.
 
 **Kill criterion:** if after 60 days public the plugin has **fewer than 500 downloads AND fewer than 5 paid conversions**, stop. If the incumbent `jenkins-control-plugin` ships working folders + working build logs before Stagecraft launches, stop immediately.
 
@@ -127,7 +133,7 @@ You push a branch. Jenkins picks it up and builds it. The build fails. Here is w
 13. Ctrl+Shift+N, type `OrderService.java`, open it, Ctrl+G, type `214`. Now you can read the failing line.
 14. Fix it. Push. Go back to step 1.
 
-Steps 9–13 are the part that breaks flow. Stages 1–8 are the part that costs minutes.
+Steps 9–13 are the part that breaks flow. Steps 1–8 are the part that costs minutes.
 
 ### 1.2 What Stagecraft does instead
 
@@ -156,13 +162,13 @@ Steps 9–13 are the part that breaks flow. Stages 1–8 are the part that costs
 └────────────────────────────────────────────────────────────────────┘
 ```
 
-Nothing is clicked to get here. The plugin already knows:
+Nothing is clicked to get here, once the server URL and API token have been entered (the only setup step). The plugin already knows:
 
-- **which Jenkins** — from the git remote of the open project;
+- **which Jenkins** — the configured server, or, with several configured, the one with a job matching the remote. A git remote does not name a Jenkins server, so this cannot be discovered from git alone;
 - **which job** — from the same remote;
 - **which branch** — from the current Git branch;
 - **which build** — the newest one for that branch;
-- **which stage failed** — from the build result;
+- **which stage failed** — from `wfapi/describe` where `pipeline-stage-view` is installed; otherwise *inferred* from the console and labelled as such (§9.3);
 - **which line to open** — from the stack frame you click.
 
 ### 1.3 Plain words for the pieces
@@ -184,7 +190,7 @@ Nothing is clicked to get here. The plugin already knows:
 
 ## §2 — The business thesis in three sentences
 
-1. **There is a large, old, uncool, permanently-installed market with proven payers and one unserved job** — Jenkins is the most-installed self-hosted build server in the world, its users are reachable without an audience, and the core thing they do all day — read a failed build's logs and find the line that broke — has **no IDE tool at all**, in a space of 38 plugins where 3 vendors are already taking money.
+1. **There is a large, old, uncool, permanently-installed market with proven payers and one unserved job** — Jenkins is the most-installed self-hosted build server in the world, its users are reachable without an audience, and the core thing they do all day — read a failed build's logs and find the line that broke — has **no IDE tool at all**, in a space of 38 plugins where 2 vendors are already taking money for 3 products.
 2. **The incumbents failed for one specific, fixable architectural reason** — every Jenkins IDE plugin begins by enumerating the server's jobs, which collapses at folders, multibranch jobs, thousands of jobs, multiple servers, CSRF and self-signed certificates; Stagecraft begins from the git remote and never enumerates the server, which removes all six failure classes at once.
 3. **It costs nothing to run and nothing to maintain at rest** — it is a client that talks to the customer's own server, so there is no hosting bill, no inference bill, no data to store, and no on-call.
 
@@ -218,7 +224,7 @@ All numbers fetched **2026-10-01** from `plugins.jetbrains.com/api` and `plugins
 
 Plus `PipelinePilot for Jenkins` (32110, FREE, 62 DL, created 2026-06-04) — see READ THIS FIRST.
 
-**Sum of rows 1-11: ~970,000 downloads.** That is the size of the market that has proven it will install a third-party Jenkins plugin.
+**Sum of rows 1-14: 969,258 downloads** (rows 1-11: 958,541). That is the size of the market that has proven it will install a third-party Jenkins plugin. Marketplace `downloads` count downloads, not distinct users, so this is an upper bound on people.
 
 Neighbouring keyword spaces, for scale:
 
@@ -275,7 +281,7 @@ Cross-space comparison, same marketplace, same day:
 | `CI Lint for GitLab` | 19411 | FREE | 54,435 | GitLab CI YAML linting |
 | `Merge Request Integration CE` | 13607 | FREE | 45,355 | GitLab MR helper |
 
-GitLab CI tooling in this marketplace clears **two million installs**. Jenkins has a **larger** self-hosted enterprise footprint than GitLab CI. Jenkins IDE tooling's largest free plugin sits at 433,254.
+GitLab CI tooling in this marketplace clears **1.7 million downloads** (1,746,260 across these three). Jenkins has a **larger** self-hosted enterprise footprint than GitLab CI. Jenkins IDE tooling's largest free plugin sits at 433,254.
 
 The gap between "what Jenkins users install" and "what is available for Jenkins" is the opportunity. Note the pattern as well: `CI Aid for GitLab` is **YAML** tooling - the *language* half of CI. Consistent with 3.3, the language half is commoditised and free at 1.6M. The **runtime** half - actual builds, actual logs, actual results - is where money changes hands (see section 5).
 
@@ -429,7 +435,7 @@ Note the second `GitHub Actions Manager` review. It is the same 8-step browser w
 
 ### 5.2 The strongest single sentence in this document
 
-`GitHub Actions Manager` renders CI logs in the IDE and has **791,388 downloads** with a paid tier. Jenkins has a larger self-hosted footprint than GitHub Actions has CI users in the enterprise, and has **zero** plugins that render its build logs.
+`GitHub Actions Manager` renders CI logs in the IDE and has **791,388 downloads** with a paid tier. Jenkins has a larger self-hosted footprint than GitHub Actions has CI users in the enterprise (asserted, not measured), and has **zero** plugins that render the log of the build that ran on your branch.
 
 ### 5.3 The honest counter-signal - read this before committing
 
@@ -437,11 +443,13 @@ Note the second `GitHub Actions Manager` review. It is the same 8-step browser w
 
 | Plugin | Downloads | Written votes | **Density** |
 |---|---|---|---|
-| `Bitbucket Integration Pro` | (Majera, `PCREVIEW`) | 491 | **1.810** |
-| `GitLab CICD - Pipelines & Jobs` | 28,037 | 21 | **0.075** |
-| `GitHub Actions Manager` | 791,388 | 14 | **0.018** |
+| `Bitbucket Integration Pro` (Majera, `PCREVIEW`) | not recorded (≈271,000 implied by 491 ÷ 1.810 × 1,000) | 491 | **1.810** |
+| `GitLab CICD - Pipelines & Jobs` (PAID) | 28,037 | 21 | **0.749** |
+| `GitHub Actions Manager` (FREEMIUM) | 791,388 | 14 | **0.018** |
 
-**CI-in-IDE converts worse than PR-review-in-IDE.** `GitHub Actions Manager` has **14 written votes on 791,388 downloads**. `Bitbucket Integration Pro` has **491 votes on far fewer downloads**. Same marketplace, same kind of product, an order of magnitude difference in how much people care.
+*Correction on review: the first version of this table gave `GitLab CICD` as 0.075. 21 ÷ 28,037 × 1,000 = **0.749**, ten times higher. The reading below was rewritten to match.*
+
+**The freemium CI plugin draws two orders of magnitude fewer reviews than PR review; the paid CI plugin does not.** `GitHub Actions Manager` has **14 written votes on 791,388 downloads** (0.018). `Bitbucket Integration Pro` has **491 votes** (1.810), about **100×** the density. But `GitLab CICD`, a straight *paid* CI-in-IDE plugin, sits at **0.749**, within **2.4×** of PR review. With one data point per shape, the measured gap is at least as much *freemium vs paid* as *CI vs PR review*. Two plugins are not a trend either way.
 
 `GitHub Actions Manager` also carries a **[1 star]** that reads *"Free version is pretty useless"*, meaning even its own paid split is contentious.
 
@@ -449,11 +457,12 @@ Note the second `GitHub Actions Manager` review. It is the same 8-step browser w
 
 - A very large number of people will install a free CI-log plugin and never pay.
 - The freemium shape (`GitHub Actions Manager`) is what the highest-volume player chose, and it produced a density of 0.018.
-- A straight paid product (`GitLab CICD`, density 0.075) does **four times better per download** at a twentieth of the volume.
+- A straight paid product (`GitLab CICD`, density 0.749) does about **42 times better per download**, at about a twenty-eighth of the volume.
+- **Review density is a proxy for engagement, not for paying.** No public number in this marketplace measures conversion, which is still unknown (D.4).
 
 **The argument that Jenkins is different, stated so you can judge it:** the Jenkins user sits behind a corporate proxy, has no free alternative UI, and had their modern UI (Blue Ocean) officially deprecated. The GitHub user has a first-class web UI and a free plugin, and tolerates both. So the Jenkins user's pain is more acute and less escapable. **This is an argument, not a measurement.** It is listed as an assumption in Appendix D.
 
-**This is the weakest link in the whole plan.** If you build this and nobody pays, this paragraph is the reason, and you were told.
+**This is still the weakest link in the whole plan**, even after the correction made it less damning: the evidence is two plugins deep, and it measures reviews, not payments. If you build this and nobody pays, this paragraph is the reason, and you were told.
 
 ### 5.4 Why a paid product rather than freemium, given 5.3
 
@@ -534,7 +543,8 @@ Build #4811  FAILED   feature/ORD-214   2m 03s
 ```
 
 - Clicking a stage swaps the log pane. **The failed stage is open before the user clicks anything.**
-- The log is scrolled to the **first error**, not to the end. The end of a Jenkins log is always `Finished: FAILURE` and never useful.
+- The log is scrolled to the **first error**, not to the end. The `Finished: FAILURE` line itself is never useful. Note that Declarative prints the failure *message* after `End of Pipeline`, outside every stage (Day-0, behaviour 8). So the first error is searched across the whole log, and the stage-view failure message (`stages[].error.message`) is used as the stage's headline when present.
+- Without `pipeline-stage-view` the failed stage is **inferred** (§9.3) and shown with an "inferred" marker. It is never presented as fact.
 - Error and warning lines get gutter stripes.
 - `OrderService.java:214` inside a stack frame is a **hyperlink**. Ctrl-click opens that file at that line. This is the feature `Jenkinsfile`'s own reviewer said they would pay for and nobody provides.
 - A **filter box over the log**: `error`, `warn`, `own-package-only`, and a whitespace-collapse toggle. `own-package-only` matters because a real Jenkins log is 90% framework noise.
@@ -552,7 +562,7 @@ Each one is a competitor's death, quoted in section 4.
 
 **3. Never require one global server.** N servers, attached **per project**, resolved from that project's remotes. (Incumbent's bug D; `Pipeline Viewer`'s bug, verbatim; `GitLab CICD`'s bug, verbatim.)
 
-**4. Never mishandle CSRF crumbs, API tokens, SSO, proxies or self-signed certificates.** Explicit "trust this certificate" flow. Proxy configuration that respects IntelliJ's "No proxy for" list. A crumb/token matrix tested against Jenkins **2.2xx through 2.4xx LTS**. **This is the top one-star cluster across all five competitors** - bugs E and F.
+**4. Never mishandle CSRF crumbs, API tokens, SSO, proxies or self-signed certificates.** Explicit "trust this certificate" flow. Proxy configuration that respects IntelliJ's "No proxy for" list. A crumb/token matrix tested against the supported LTS range (§9.2, §9.8). **This is the top one-star cluster across all five competitors** - bugs E and F.
 
 **5. Never lose configuration on restart.** The incumbent's review: *"lost the connect config when restart. idea version is 2021.3"*. Credentials go in IntelliJ's `PasswordSafe`; server/job mappings go in project-level settings; nothing lives in memory only.
 
@@ -648,7 +658,9 @@ Marketplace tags found on competing listings: `Completion`, `Machine Learning`, 
 
 ### 9.1 Module layout
 
-Gradle, Kotlin, IntelliJ Platform Gradle Plugin 2.x. Targets IntelliJ IDEA Community and Ultimate, plus `since-build` set low enough to cover 2023.x and later.
+Gradle, Kotlin, IntelliJ Platform Gradle Plugin 2.x. Targets IntelliJ IDEA (Community and Ultimate, or the unified distribution from 2025.3 onward; verify the edition story at Day 1), with `since-build` set low enough to cover 2023.x and later.
+
+**JVM target trap:** 2023.x through 2024.1 IDEs run on Java 17. Compile with a JDK 21 toolchain if you like, but emit **Java 17 bytecode** (`jvmTarget = 17`) while `since-build` is below `242`. Otherwise the plugin fails to load on those IDEs.
 
 ```
 stagecraft/
@@ -660,7 +672,7 @@ stagecraft/
 │   ├── jenkins/                    <- NO IntelliJ imports below this line
 │   │   ├── JenkinsUrls.kt          <- base URL normalisation, path building
 │   │   ├── JenkinsAuth.kt          <- Basic + token, crumb fetch and cache
-│   │   ├── JenkinsHttp.kt          <- the only place that opens a socket
+│   │   ├── JenkinsHttp.kt          <- the only place that opens a socket; ProxySelector + SSLContext injected
 │   │   ├── JenkinsClient.kt        <- typed calls: build, console, tests, stages, lint
 │   │   ├── JenkinsVersion.kt       <- from the X-Jenkins response header
 │   │   ├── RemoteMatcher.kt        <- git remote -> job  (9.4)
@@ -685,7 +697,7 @@ stagecraft/
 └── src/main/resources/META-INF/plugin.xml
 ```
 
-**The one rule that matters:** `dev.stagecraft.jenkins` has **no IntelliJ imports**. It is a testable plain-Kotlin HTTP client. Every API trap in this document is covered by a unit test in that package, running against recorded JSON fixtures, with no IDE and no live server. This is what makes the fragile parts (crumbs, folders, multibranch, console parsing) cheap to test.
+**The one rule that matters:** `dev.stagecraft.jenkins` has **no IntelliJ imports**. It is a testable plain-Kotlin HTTP client. Proxy and TLS therefore come in from the service layer as a `java.net.ProxySelector` and a `javax.net.ssl.SSLContext`. `JenkinsHttp` never reads IDE settings itself. The stage parser's executable spec already exists in [`tools/test_parse_stages.py`](tools/test_parse_stages.py); port its cases to `ConsoleStages` tests one-for-one. Every API trap in this document is covered by a unit test in that package, running against recorded JSON fixtures, with no IDE and no live server. This is what makes the fragile parts (crumbs, folders, multibranch, console parsing) cheap to test.
 
 ### 9.2 Authentication, CSRF, TLS and proxy - the matrix that kills competitors
 
@@ -700,10 +712,11 @@ Authorization: Basic base64(user + ":" + apiToken)
 Use an **API token**, not a password. Explain this in the settings UI and link to the customer's own `/me/configure` page. Validate the token immediately with:
 
 ```
-GET {base}/me/api/json        ->  200 and a user object = good token
+GET {base}/me/api/json        ->  200 and "id" equal to the configured user = good token
+                              ->  401 = bad token (record this response: Day-0 re-check R6)
 ```
 
-That gives a specific error message in the UI instead of a mysterious later failure.
+Compare the returned `id` with the configured user name. A `200` alone is not enough: a server that allows anonymous read can answer `/me` as `anonymous`. That gives a specific error message in the UI instead of a mysterious later failure.
 
 **Session cookies.** Jenkins authenticates a session with a cookie after the first Basic-authenticated request. Keep a cookie store per server inside `JenkinsHttp`, and reuse it. Do not create a new client per request.
 
@@ -715,11 +728,18 @@ GET {base}/crumbIssuer/api/json
   -> 404 = CSRF protection is disabled on this server; send no crumb and cache that fact
 ```
 
-Send the returned field name and value as a header on every **POST**. Crumb sessions expire when the session expires, so: on any `403` whose body contains `No valid crumb`, refetch the crumb **once** and retry **once**, then fail with a readable message. Do not loop.
+**Who needs a crumb, as measured at Day-0** (Jenkins 2.541.3; API-token exemption since 2.96):
 
-**TLS.** Do not disable verification globally. Offer a per-server **"trust this certificate"** flow that pins the certificate the user explicitly accepted, and show its fingerprint and issuer so the decision is informed. `Pipeline Viewer`'s one-star review is *"freezes IntelliJ with an SSL Certificate validation exception that isn't handled"* - a handled exception plus a readable message is the entire fix.
+| Auth | Crumb on POST | Notes |
+|---|---|---|
+| user + **API token** | **not required** | A wrong crumb is ignored (Day-0 check 15). Sending one is harmless; never fail because the crumb fetch failed. |
+| user + password | **required** | The crumb is bound to the web session (Jenkins ≥ 2.176.2), so send the session cookie from the crumb request with it. |
 
-**Proxies.** Respect IntelliJ's own proxy settings (`HttpConfigurable`) including the **"No proxy for"** list, and additionally offer a per-server override, because Jenkins servers are usually internal and must bypass a corporate proxy.
+For password auth, send the returned field name and value as a header on every **POST**. Crumbs expire with the session, so: on any `403` whose body contains `No valid crumb`, refetch the crumb **once** and retry **once**, then fail with a readable message. Do not loop.
+
+**TLS.** Do not disable verification globally. Offer a per-server **"trust this certificate"** flow that pins the certificate the user explicitly accepted, and show its fingerprint and issuer so the decision is informed. Before building one, evaluate the platform's own `CertificateManager`, which already has an accept-certificate dialog and a trust store shared with the rest of the IDE. Either way, hand the resulting `SSLContext` to `JenkinsHttp`. `Pipeline Viewer`'s one-star review is *"freezes IntelliJ with an SSL Certificate validation exception that isn't handled"* - a handled exception plus a readable message is the entire fix.
+
+**Proxies.** Respect IntelliJ's own proxy settings, including the **"No proxy for"** list. That is `HttpConfigurable` on older platforms; it is deprecated on newer ones in favour of the new proxy-settings API, so verify the correct API for every target platform. Resolve them in the service layer and pass a `ProxySelector` down, and additionally offer a per-server override, because Jenkins servers are usually internal and must bypass a corporate proxy.
 
 **Timeouts.** Two numbers, both configurable, both short: **connect 5s, read 20s**. The incumbent's freeze happened because its timeout was effectively infinite at IDE startup.
 
@@ -735,7 +755,7 @@ Send the returned field name and value as a header on every **POST**. Crumb sess
 | 2.479.x LTS | test | test | test | test | test | n/a |
 | newest LTS | test | test | test | test | test | n/a |
 
-12-20 cells, scriptable, and it is the difference between a plugin that works and a plugin that gets one-star reviews.
+25 testable cells (5 versions × 5 columns), scriptable, and it is the difference between a plugin that works and a plugin that gets one-star reviews. The 2.204.x row needs a Java 8 image and plugin versions contemporary with it, because current plugins will not install. Decide at Day 13 whether that row is worth the cost or whether the floor (§9.8) moves up.
 
 ---
 ### 9.3 Per-stage logs - the parser, and the proof
@@ -753,7 +773,9 @@ Send the returned field name and value as a header on every **POST**. Crumb sess
 | **`pipeline-stage-view`** | **147,819** |
 | `blueocean` | 47,772 |
 
-`pipeline-stage-view` / `git` = **64.3%**. A design that required it would be dark for **35.7% of servers**.
+`pipeline-stage-view` / `git` = **64.3%**. A design that required it would be dark for **35.7% of servers**. (Strictly, the `wfapi` endpoints are served by `pipeline-rest-api`, which `pipeline-stage-view` depends on: 152,099 / 230,038 = **66.1%**. Either way, about a third of servers have no stage JSON.)
+
+*Not yet evaluated:* `pipeline-graph-view`, the Jenkins project's successor UI to Blue Ocean, which has its own stage-tree and per-step log endpoints. Before Day 9, check its installation count and API. If it is common, it becomes a second progressive enhancement next to `wfapi`.
 
 **The solution.** Jenkins writes stage boundaries into the console text itself. This was verified against a real captured console log - `PacktPublishing/Docker-for-Developers`, `chapter7/consoleText.txt`, 237 lines, a genuine Jenkins declarative pipeline run:
 
@@ -778,7 +800,7 @@ Send the returned field name and value as a header on every **POST**. Crumb sess
     233  [Pipeline] End of Pipeline
 ```
 
-A 20-line parser was run against that file. Result:
+A short stack-based parser was run against that file. (The original preflight copy of the log is not committed to this repository. The Day-0 fixtures are the committed, reproducible version of this proof.) Result:
 
 ```
 stages recovered = 3
@@ -789,23 +811,34 @@ stages recovered = 3
 
 **Exact boundaries, exact line counts, from `/consoleText` alone.** The marker `[Pipeline] // stage` appears in **4,424 files** on GitHub - it is the documented, universal Jenkins pipeline console format, not a quirk of one server.
 
-**The algorithm** (`ConsoleStages.kt`):
+**The algorithm** (`ConsoleStages.kt`; reference implementation and executable spec in [`tools/parse_stages.py`](tools/parse_stages.py) and [`tools/test_parse_stages.py`](tools/test_parse_stages.py)). Strip ANSI codes and `\r` first, then:
 
 ```
-STAGE_OPEN   = ^\[Pipeline\] \{\s*\((.*)\)\s*$        <- names the block
-STAGE_CLOSE  = ^\[Pipeline\] // stage$                 <- closes a stage
-BLOCK_OPEN   = ^\[Pipeline\] \{$                       <- anonymous block
-BLOCK_CLOSE  = ^\[Pipeline\] \}$                        <- closes any block
-END          = ^\[Pipeline\] End of Pipeline$
+NAMED_OPEN     = ^\[Pipeline\] \{\s*\((.*)\)\s*$    <- a stage body, or "Branch: x" inside parallel
+BLOCK_OPEN     = ^\[Pipeline\] \{$                  <- anonymous block (node, withEnv, script ...)
+BLOCK_CLOSE    = ^\[Pipeline\] \}$                  <- closes the innermost open block: this ends a stage
+STAGE_CLOSE    = ^\[Pipeline\] // stage$            <- informational only - must NOT pop anything
+PARALLEL_OPEN  = ^\[Pipeline\] parallel$
+PARALLEL_CLOSE = ^\[Pipeline\] // parallel$
+SKIPPED        = ^Stage "(.+)" skipped due to (.+)$
+END            = ^\[Pipeline\] End of Pipeline$
 ```
 
-Maintain a **stack** of open blocks. `STAGE_OPEN` and `BLOCK_OPEN` push; the matching `BLOCK_CLOSE` pops; `STAGE_CLOSE` pops the nearest stage frame and emits `(name, firstLine, lastLine)`. A stack is required because real pipelines nest - `stage > script > withEnv > withDockerRegistry` - and because parallel stages emit `{ (Branch: linux)` blocks that close with a plain `}` and never with `// stage`.
+Maintain a **stack** of open blocks. `NAMED_OPEN` and `BLOCK_OPEN` push; `BLOCK_CLOSE` pops, and popping a stage frame fixes that stage's last line. A stack is needed because real pipelines nest: `stage > script > withEnv > withDockerRegistry`, and stages inside stages.
+
+Four rules the first version of this section got wrong. All four were found on review and are now covered by tests:
+
+1. **`// stage` closes nothing.** It follows the `}` that already closed the stage. Treating it as a pop destroys the enclosing `node`/`withEnv` frames, and for nested stages it cuts the parent off at the child's end.
+2. **A stack cannot match `parallel`.** Branches open together and close in completion order, not nesting order. The plain console carries **no per-branch line prefix** (removed by JEP-210), so interleaved output cannot be attributed to a branch at all. `Branch: x` frames are not stages. Stages inside a parallel region are reported with **the whole region as their range** and `interleaved: true`. The UI says *"parallel output, not separable without stage view"* instead of pretending.
+3. **`Declarative: …` stages are synthetic.** `Checkout SCM`, `Post Actions`, `Tool Install` and `Agent Setup` are flagged, and never chosen as "the stage that failed" unless the first error is inside them (`Post Actions` never).
+4. **The console has no stage status.** `SKIPPED` lines mark skipped stages. The failed stage is *inferred*: the innermost stage containing the first error line if there is one, otherwise the last executed non-synthetic, non-skipped stage. The inference is returned with its basis and shown as inferred. On the Day-0 server the failure message sits *after* `End of Pipeline`, outside every stage.
 
 **Fallback chain, in order:**
 
-1. `{build}/wfapi/describe` returns stages -> use them. They carry `status`, `startTimeMillis`, `durationMillis` - **richer**, so use them when present.
-2. Otherwise parse `/consoleText`. Boundaries and names are correct; per-stage **timings are not available** and must not be invented. Show line counts or elapsed-from-timestamps instead of fake durations.
-3. No `[Pipeline]` markers at all -> the job is a **freestyle job**, not a pipeline. Render one pseudo-stage labelled `Build` containing the whole console. This is still correct behaviour and must not be an error state.
+1. `{build}/wfapi/describe` returns stages -> use them. They carry `status`, `startTimeMillis`, `durationMillis` and, for a failed stage, `error.message` (Day-0 fixture `12.wfapi.json`): **richer**, so use them when present. For per-stage *log text*, prefer `{build}/execution/node/{id}/wfapi/log`. It is the only source that separates parallel branches exactly (to be verified: Day-0 re-check R2).
+2. Otherwise parse `/consoleText`. Names and boundaries are exact for sequential and nested stages. Parallel stages are named but interleaved, and status is inferred (rules 2 and 4 above). Per-stage **timings are not available** and must not be invented. Show line counts or elapsed-from-timestamps instead of fake durations.
+3. `[Pipeline]` markers but no stages (a scripted pipeline without `stage`) -> one pseudo-stage labelled `Pipeline` containing the whole console.
+4. No `[Pipeline]` markers at all -> the job is a **freestyle job**, not a pipeline. Render one pseudo-stage labelled `Build` containing the whole console. This is still correct behaviour and must not be an error state.
 
 **This fallback chain is the reason to build this product now** rather than after `pipeline-stage-view` becomes universal. It cannot become universal: it is an optional plugin and a third of servers do not have it.
 
@@ -817,18 +850,18 @@ This is the only genuinely difficult piece of engineering in the product, and it
 
 **The design that avoids the trap:**
 
-**Step 1 - cheap tree fetch.** Do **not** fetch jobs one by one. Fetch the whole namespace tree shallowly, in one to three requests:
+**Step 1 - cheap tree fetch.** Do **not** fetch jobs one by one. `tree=` nests, so fetch several levels of the namespace in **one** request:
 
 ```
-GET {base}/api/json?tree=jobs[name,url,_class]
-GET {folder}/api/json?tree=jobs[name,url,_class]      for each folder, capped
+GET {base}/api/json?tree=jobs[name,_class,jobs[name,_class,jobs[name,_class]]]
+GET {item}/api/json?tree=jobs[name,_class,jobs[name,_class,jobs[name,_class]]]   only for items still unexpanded at depth 3, capped
 ```
 
-A folder's `_class` is `com.cloudbees.hudson.plugins.folder.Folder`. This is cheap - a few KB per folder, no per-job round trip - and it is bounded by the number of *folders*, not the number of jobs.
+Recurse into **any item that returns a `jobs` array**, not into one `_class`. Folders (`com.cloudbees.hudson.plugins.folder.Folder`), organization folders (`jenkins.branch.OrganizationFolder`, which is how GitHub/Bitbucket org scanning lays out jobs) and multibranch projects all qualify. Do not request `url` per item: it is built from Jenkins' configured root URL, which is wrong behind a reverse proxy (Day-0, behaviour 7). Build paths yourself as `job/{name}/job/{name}`, with each name URL-encoded once more (`feature%2FORD-214` -> `feature%252FORD-214`). This is cheap, a few KB per level with no per-job round trip, and it is bounded by the number of *containers*, not the number of jobs. Verify the nested form against the Day-0 folder tree (re-check R5).
 
 **Step 2 - candidate selection without a per-job request.** Derive the repository name from the git remote (`my-service`) and rank candidates by name match, in this order:
 
-1. a multibranch pipeline job whose name matches the repo name, in any folder;
+1. a multibranch pipeline job whose name matches the repo name, in any folder (inside an organization folder the repository job is named exactly after the repository);
 2. any job whose name matches the repo name;
 3. any job whose name contains a distinctive path segment from the remote.
 
@@ -844,6 +877,12 @@ Then confirm the remote by reading the `remoteUrls` action of **one** build:
 ```
 GET {branchJob}/{n}/api/json?tree=actions[remoteUrls,lastBuiltRevision[SHA1,branch[name]]]
 ```
+
+**Three traps in Step 3:**
+
+- **Your branch may have no branch job.** GitHub and Bitbucket branch sources by default *exclude branches that are also filed as pull requests*. Such a branch builds only as `PR-123`. If no child job matches the current branch, look at the `PR-*` children and match on the PR's source branch, which the change-request metadata exposes (exact field to be recorded: Day-0 re-check R8). An empty tool window for every developer with an open PR would be the product's most common failure.
+- **`remoteUrls` is a list, and there are several `BuildData` actions.** Shared libraries and extra checkouts add their own. Match if *any* URL equals the project remote after normalisation: lower-case host; strip a trailing `.git` and `/`; treat `git@host:org/repo`, `ssh://git@host/org/repo` and `https://host/org/repo` as the same repository. The Day-0 fixture URL has no `.git`.
+- **A 404 may mean "no permission".** Jenkins answers 404 for jobs the user cannot see. Say *"not found, or not visible to this account"*.
 
 **Step 4 - cache, and make the cache the product.** The index is written to disk, keyed by a hash of the server URL:
 
@@ -870,7 +909,9 @@ GET {build}/logText/progressiveText?start={offset}
   header X-More-Data -> true while the build is still running
 ```
 
-Poll every **2 seconds** while the build is running, appending only the delta. Stop when `X-More-Data` is absent. Stop immediately if the tool window closes or the project is disposed.
+Poll every **2 seconds** while the build is running, appending only the delta. Stop when `X-More-Data` is absent (it is absent, not `false`, on a finished build: Day-0 check 10). Stop immediately if the tool window closes or the project is disposed.
+
+**Treat `X-Text-Size` as an opaque cursor.** It is an offset into Jenkins' raw log file, which contains hidden console annotations. It is **not** the byte length of the text you received. Day-0 recorded `X-Text-Size: 12263` against a `Content-Length` of 12,336 for a log whose plain text is about 2.9 KB. Never compute the next offset from the body. Whether an arbitrary mid-log offset (for a tail fetch, §9.7) lands cleanly is unverified (re-check R1).
 
 `{build}/logText/progressiveHtml` exists and returns the same content with Jenkins' own hyperlinks and colours. **Do not use it.** Stagecraft must produce its own linkified view (9.6) because the whole point is that frames resolve to *source files*, not to Jenkins URLs.
 
@@ -885,18 +926,29 @@ GET {build}/testReport/api/json
                                  errorDetails, errorStackTrace } ] } ] }
 ```
 
-`errorStackTrace` is the string to parse. Match, in order:
+Each suite also carries `enclosingBlockNames` and `nodeId` (Day-0 fixture `11.testreport.json`: `["Deploy to staging"]`). **Jenkins already maps tests to stages.** Use it for the per-stage `[tests: …]` badge; there is nothing to match client-side.
 
-1. Java/Kotlin: `\s+at\s+([\w$.]+)\.([\w$<>]+)\(([\w$]+\.(?:java|kt)):(\d+)\)`
-2. Kotlin/JVM: `([\w$.]+)\.kt:(\d+)`
-3. Python: `File "(.+?)", line (\d+)` (for PyCharm)
-4. Go: `\t(.+?\.go):(\d+)`
-5. Node/JS: `at .+ \((.+?\.(?:js|ts)):(\d+):\d+\)`
-6. .NET: `in (.+?\.cs):line (\d+)`
+`errorStackTrace` (and the console) are the strings to parse. There are two kinds of location, and they resolve differently.
 
-Then resolve the file to a **project** source file by path suffix. Two hard rules:
+**Stack frames** carry a class name and a bare file name, never a path:
 
-- **Match by suffix, not by absolute path.** The Jenkins agent's workspace path has nothing to do with the developer's checkout. `.../workspace/my-service/src/main/java/com/company/order/OrderService.java` must resolve against `src/main/java/com/company/order/OrderService.java` in the project.
+1. JVM (Java/Kotlin/Groovy/Scala): `(?:^|\s)at\s+(?:[\w$.\-]*/+)*([\w$.]+)\.([\w$<>\-]+)\(([\w$\-]+\.(?:java|kt|groovy|scala)):(\d+)\)`. The `(?:^|\s)` matters: Jenkins' `errorStackTrace` can start with `at` and no indentation. The first version of this pattern required leading whitespace and missed the test's own frame in the Day-0 fixture. The `…/+` prefix skips module and loader names (`java.base/`, `app//`).
+2. Python: `File "(.+?)", line (\d+)` (for PyCharm)
+3. Go: `^\s+(\S+?\.go):(\d+)` (multiline)
+4. Node/JS/TS: `\bat (?:.+? \()?((?:[A-Za-z]:)?[^\s():]+\.(?:[cm]?js|tsx?)):(\d+):\d+\)?` (covers both `at f (file:1:2)` and anonymous `at file:1:2`)
+5. .NET: `\bin (.+?\.cs):line (\d+)`
+
+**Resolve JVM frames by class, not by file name.** `OrderService.java:214` alone is ambiguous in any real project. Resolve the fully qualified class (`com.company.order.OrderService`) to a PSI class, then go to the line. Prefer the platform's own `ExceptionFilters` / `Filter` implementations applied through `EditorHyperlinkSupport` over hand-rolled JVM matching. They already handle inner classes, lambdas and library frames.
+
+**Compiler and tool errors** carry an agent-side *path*. These are the most common way a Jenkins build actually fails, and the first version of this section had no pattern for them:
+
+6. Maven: `^\[(?:ERROR|WARNING)\] (\S+?\.\w+):\[(\d+),(\d+)\]`
+7. Gradle/Kotlin: `^[ew]: (?:file://)?(\S+?\.kts?):(\d+):(\d+)`
+8. javac/gcc/go/tsc style: `^(\S+?\.(?:java|c|cc|cpp|h|hpp|go|ts|tsx|js|py|rs)):(\d+)(?::(\d+))?: (?:fatal )?(?:error|warning)\b`
+
+Two hard rules for paths:
+
+- **Match by suffix, not by absolute path.** The Jenkins agent's workspace path has nothing to do with the developer's checkout. `.../workspace/my-service/src/main/java/com/company/order/OrderService.java` must resolve against `src/main/java/com/company/order/OrderService.java` in the project: the longest suffix that matches wins, and a tie means no link.
 - **If the file is not in the project, do not offer a link.** A dead hyperlink is worse than plain text, and a link that opens the wrong file is a bug report.
 
 Implementation: a real read-only `Editor` from `EditorFactory`, with `RangeHighlighter` for error lines and an `EditorMouseListener` (or a custom `HyperlinkInfo`) resolving the offsets. Do not hand-roll a text widget; the editor gives search, selection, folding and accessibility for free.
@@ -916,9 +968,9 @@ Jenkins logs of 100-500 MB exist. These are the numbers to build to:
 
 Rules that follow from those:
 
-- **Never** `GET /consoleText` for a whole large log. Fetch the **head** (default 512 KB) plus a window around the first detected error, then let the user pull more with an explicit action.
+- **Never hold a whole large log in memory.** Neither console endpoint takes a byte range, and the error is usually at the **end**: Declarative prints the failure after `End of Pipeline`. So "fetch the head plus a window around the error" cannot be done in one request. Instead, **stream `/consoleText` once** and scan it as it arrives. Spool it to a temp file, record line-start offsets and the first error line on the way, keep the first 20 MB plus a rolling tail buffer (default 2 MB), and drop the middle. The end of a 180 MB log is then always on screen. A cheaper tail-only fetch via `progressiveText?start={size - N}` depends on re-check R1.
 - **Never** build a `List<String>` of every log line. Use an `IntArrayList` of line-start offsets into one `CharSequence`, and hand that to the editor as a `Document` - or write to a temp file and open a read-only `VirtualFile`, which is what the 50 MB case requires.
-- Cap the retained log at a configurable maximum (default **20 MB**) and say so in the UI when truncating: *"showing the first 20 MB of 180 MB - open in Jenkins"*. Silent truncation generates bug reports.
+- Cap the retained log at a configurable maximum (default **20 MB** head + **2 MB** tail) and say so in the UI when truncating: *"showing the first 20 MB and the last 2 MB of 180 MB - open in Jenkins"*. Silent truncation generates bug reports.
 - Tail with `progressiveText` and only the delta, never by re-fetching.
 
 ### 9.8 Version compatibility
@@ -953,13 +1005,13 @@ Do not write plugin code until this day is complete. It exists to convert the pl
 | 6 | Branch build list | `GET /job/{mb}/job/{branch}/api/json?tree=builds[number,result,timestamp,duration,building]{0,25}` | builds listed |
 | 7 | Remote URL of a build | `GET /job/{mb}/job/{branch}/{n}/api/json?tree=actions[remoteUrls,...]` | `remoteUrls` contains the git URL |
 | 8 | Full console | `GET /job/{mb}/job/{branch}/{n}/consoleText` | plain text, `[Pipeline]` markers present |
-| 9 | **Stage segmentation** | local parser on that text | 3 stages, names correct |
+| 9 | **Stage segmentation** | local parser on that text | 3 authored stages, names correct (Jenkins adds a synthetic `Declarative: Checkout SCM`) |
 | 10 | Incremental log | `GET /job/{mb}/job/{branch}/{n}/logText/progressiveText?start=0` | body + `X-Text-Size` |
 | 11 | Test results | `GET /job/{mb}/job/{branch}/{n}/testReport/api/json` | JSON, or a clean 404 on a build with no tests |
 | 12 | Stage JSON, if present | `GET /job/{mb}/job/{branch}/{n}/wfapi/describe` | 200 with `pipeline-stage-view`, 404 without - **record both** |
 | 13 | **Lint** | `POST /pipeline-model-converter/validate` with form field `jenkinsfile`, **with the crumb** | text response; then repeat with a deliberately broken Jenkinsfile and confirm the error text |
 | 14 | 404 behaviour | `GET /job/does-not-exist/api/json` | 404, cleanly distinguishable from 403 |
-| 15 | 403 behaviour | POST with a **stale** crumb | 403; confirm the body contains `No valid crumb` |
+| 15 | 403 behaviour | POST with a **stale** crumb, **password auth** | 403; confirm the body contains `No valid crumb` (API-token requests are crumb-exempt) |
 
 **Then do the same 15 checks a second time with the server behind a self-signed HTTPS proxy** (a second container with `nginx` and a self-signed cert is enough). Items 1-3 and 13 are the ones that break.
 
@@ -976,6 +1028,8 @@ Do not write plugin code until this day is complete. It exists to convert the pl
 
 **Record the raw responses in `docs/day0-verification.md` in this repository.** They become the recording fixtures for the `dev.stagecraft.jenkins` unit tests (9.1).
 
+**Executed 2026-10-01: PASS with deviations.** The [record](docs/day0-verification.md) lists six deviations from the table above and ten open re-checks (R1–R10), each with the build day it blocks.
+
 ---
 
 ## §11 — The build plan: 14 days
@@ -985,7 +1039,7 @@ Assumes full-time work and a working Day-0 verification. Every day ends with som
 ### Days 1-2 - the client, with no UI at all
 
 - Gradle project, IntelliJ Platform Gradle Plugin 2.x, `plugin.xml` with an empty tool window.
-- Implement `JenkinsHttp`, `JenkinsAuth`, `JenkinsUrls`. Basic auth with token, cookie store, crumb fetch-and-cache, refetch-once-on-403, timeouts, proxy from `HttpConfigurable`, optional pinned certificate.
+- Implement `JenkinsHttp`, `JenkinsAuth`, `JenkinsUrls`. Basic auth with token, cookie store, crumb fetch-and-cache for password auth only, refetch-once-on-403, timeouts, injected `ProxySelector` and `SSLContext` (no IDE imports, §9.1), returned URLs rebased onto the configured base.
 - **A `main()` that prints a build's console to stdout.** No IDE, no window. If this does not work, nothing else matters.
 - Unit tests over the Day-0 fixtures: auth, crumb, folder traversal, multibranch branch jobs, build list.
 
@@ -993,8 +1047,8 @@ Assumes full-time work and a working Day-0 verification. Every day ends with som
 
 ### Days 3-4 - the parser and the matcher
 
-- `ConsoleStages.kt` with the stack-based parser, wired to the real `/consoleText` from the container. Assert 3 stages, correct names, correct line ranges.
-- `RemoteMatcher.kt` and `JobIndex.kt`: shallow tree fetch, name ranking, one-build remote confirmation, disk cache keyed by server hash, the 2,000-job cap.
+- `ConsoleStages.kt` with the stack-based parser, wired to the real `/consoleText` from the container. Port every case of `tools/test_parse_stages.py`. On the Day-0 `main` build, assert 4 stages (3 authored + `Declarative: Checkout SCM`), correct names, correct line ranges.
+- `RemoteMatcher.kt` and `JobIndex.kt`: nested shallow tree fetch, name ranking, `PR-N` fallback for branches with open pull requests, remote-URL normalisation, one-build remote confirmation, disk cache keyed by server hash, the 2,000-job cap.
 - Unit tests: a 1,000-job synthetic index (generate it, do not run a 1,000-job Jenkins) asserting the match completes in < 500 ms from cache.
 
 **Exit criteria:** given only a git remote and a branch name, the code names the right job and the right build number, in a test, with no IDE running.
@@ -1095,13 +1149,16 @@ These are measured from the marketplace, not modelled:
 
 Price **$29/year**, 30-day trial, no free tier, and assume a **2-4% trial-to-paid conversion** (unmeasurable in advance - this is the honest range for a paid developer tool with a trial and no marketing).
 
-| Scenario | Downloads in year 1 | Paid conversions | Vendor revenue, year 1 |
+| Scenario | Downloads | Paid conversions | Vendor revenue |
 |---|---|---|---|
-| **Base** - matches the marketplace median | 1,411 | 28-56 | **$690 - $1,380** |
-| **Good** - a working niche product with reviews | 8,000 | 160-320 | **$3,940 - $7,890** |
-| **Excellent** - matches the top-paid Jenkins plugin's trajectory | 40,000 | 800-1,600 | **$19,720 - $39,440** |
+| **Floor** - matches the 2026-cohort median, year 1 (measured) | 171 | 3-7 | **$74 - $173**, year 1 |
+| **Base** - matches the marketplace lifetime median (measured, over several years) | 1,411 | 28-56 | **$690 - $1,380**, cumulative |
+| **Good** - a working niche product with reviews (assumed) | 8,000 | 160-320 | **$3,940 - $7,890**, year 1 |
+| **Excellent** - matches the top-paid Jenkins plugin's trajectory (assumed) | 40,000 | 800-1,600 | **$19,720 - $39,440**, year 1 |
 
-**Base case: a few hundred to about fifteen hundred dollars a year.** That is the honest expectation, and it is the same figure as the other two tracks. It is not a business on its own. It is a small, permanent, zero-maintenance income stream that costs nothing to keep running and can be repeated.
+*Correction on review: the first version used the lifetime median (1,411) as **year-1** downloads. The measured year-1 figure is the 2026-cohort median, 171, so the old base case was about 8× optimistic for year one.*
+
+**Base case: a few hundred to about fifteen hundred dollars over the plugin's lifetime, and under $200 in year one** if Stagecraft lands where this year's paid plugins land. That is the honest expectation, and it is the same figure as the other two tracks. It is not a business on its own. It is a small, permanent, zero-maintenance income stream that costs nothing to keep running and can be repeated.
 
 **The Excellent case is the argument for this particular pick.** The top paid Jenkins plugin has **157,778 downloads**. If Stagecraft reaches even a tenth of that, the number stops being pocket money. The ceiling in this space is materially higher than in the other two tracks, because the space has an existing paid customer base of **200,607 downloads across three products**.
 
@@ -1190,7 +1247,7 @@ Ranked by how likely each is to end the project. Every one of these is real, and
 
 ### 14.1 Risk 1 - CI-in-IDE may simply convert worse than PR-review-in-IDE. (HIGH)
 
-**Evidence against:** `GitHub Actions Manager` has **14 written votes on 791,388 downloads** (density **0.018**); `GitLab CICD` has **0.075**; `Bitbucket Integration Pro` has **1.810**. The best-funded, highest-volume player in exactly this category could not make its users care enough to write a review.
+**Evidence against:** `GitHub Actions Manager` has **14 written votes on 791,388 downloads** (density **0.018**); `Bitbucket Integration Pro` has **1.810**. The highest-volume player in exactly this category, a freemium one, could not make its users care enough to write a review. **Weakened on review:** the paid `GitLab CICD` sits at **0.749** (previously misstated as 0.075), within 2.4× of PR review. So the gap is at least partly freemium vs paid, and review density is not conversion (§5.3).
 
 **Evidence for:** the Jenkins user has no alternative UI and had Blue Ocean deprecated; the space's own paid precedents (`PJENKINSFILE` 157,778) prove Jenkins users pay for IDE plugins; and `CIclone`'s paying customer wrote *"check CI logs on the IDE and jump right to the source code"* unprompted.
 
@@ -1249,6 +1306,8 @@ The product assumes the 8-step browser workflow (1.1) is a real daily irritant. 
 | What is the actual trial-to-paid conversion? | The whole revenue model | Only measurable after 60 days live |
 | Will enterprises buy a $29 plugin or require a purchase order? | Pricing and packaging | Watch the first ten sales |
 | Does the free Community edition have every API needed? | 91% of installs are Community | Test on Community during Day-0 |
+| Does IntelliJ IDEA's unified distribution (2025.3+) change what "must work on Community" means? | Target editions, `plugin.xml` dependencies, test matrix | Check the current JetBrains edition model on Day 1 |
+| Is `pipeline-graph-view` common enough to be a second stage-and-log source? | Exact parallel logs on servers without stage view | Update-centre installation count + its API, before Day 9 |
 
 ---
 ---
@@ -1259,7 +1318,7 @@ This repository is the charter. It contains no product code. Everything needed t
 
 ### 15.1 Before writing code
 
-1. Read **§10** and run the Day-0 gate. Nothing else starts until all 15 checks pass on HTTP and HTTPS.
+1. Read **§10** and run the Day-0 gate. Nothing else starts until all 15 checks pass on HTTP and HTTPS. *(Done 2026-10-01: PASS with deviations. Close re-checks R1–R10 by the days listed in [`docs/day0-verification.md`](docs/day0-verification.md).)*
 2. Read **§7.3** - the five things that must never happen - and **§7.6** - the seven-point acceptance test. Every later decision is judged against those two lists.
 3. Read **§1** and **§6** to re-establish what the product is and what it deliberately is not.
 
@@ -1267,13 +1326,13 @@ This repository is the charter. It contains no product code. Everything needed t
 
 | Item | Value |
 |---|---|
-| JDK | 21 |
+| JDK | 21 toolchain; emit **Java 17 bytecode** while `since-build` < 242 (§9.1) |
 | Gradle | via the IntelliJ Platform Gradle Plugin 2.x wrapper |
 | IntelliJ Platform SDK | against the **oldest supported** IDE (2023.1), every 2024.x and 2025.x LTS, and the current release |
 | IDE for development | IntelliJ IDEA Ultimate (for testing Ultimate-specific behaviour); **the plugin must work on Community** - 91% of installs are Community |
 | Test Jenkins | `docker run -p 8080:8080 jenkins/jenkins:lts-jdk17` |
 | Test Jenkins, HTTPS | a second container behind `nginx` with a self-signed certificate |
-| Test fixtures | the raw responses captured during the Day-0 gate, committed to `docs/day0-verification.md` |
+| Test fixtures | raw Day-0 responses in `docs/fixtures/` (index and deviations in `docs/day0-verification.md`); stage-parser spec in `tools/test_parse_stages.py` |
 
 ### 15.3 The order of work
 
@@ -1282,7 +1341,7 @@ Follow **§11** day by day. The order is not a suggestion: days 1-4 produce a cl
 ### 15.4 The three things that will be forgotten
 
 1. **The token, not the password.** `Authorization: Basic base64(user:apiToken)`. Passwords fail on most servers because of SSO. The settings screen must say "API token" in the label, with a link to `{base}/user/{user}/configure`.
-2. **The crumb.** Every POST needs it after `GET /crumbIssuer/api/json`, and a `403` with `No valid crumb` means refetch **once**, never loop. This is the single most common cause of one-star reviews in this space (section 4 classes E and F).
+2. **The crumb.** With an API token, POSTs do not need one (Day-0 check 15). With a password, every POST needs it after `GET /crumbIssuer/api/json`, together with the session cookie it is bound to. A `403` with `No valid crumb` means refetch **once**, never loop. This is the single most common cause of one-star reviews in this space (section 4 classes E and F).
 3. **The cache.** If the tool window is empty for five seconds on every IDE start, the product is dead. Populate from `{systemPath}/stagecraft/index-{sha1(serverUrl)}.json` first, refresh in the background, and show the age of the data.
 
 ### 15.5 When a decision is not covered
@@ -1414,6 +1473,8 @@ Verify with:
 GET {base}/me/api/json
 ```
 
+and compare the returned `id` with the configured user name: a bare `200` can be `anonymous` (§9.2).
+
 Create the token at `{base}/user/{username}/configure`. **Passwords fail on SSO-enabled servers**, which is most enterprise installs. The settings UI must say "API token" in its label and link to that page.
 
 Keep a **per-server cookie store** and reuse one HTTP client. Jenkins sets session cookies, and re-authenticating on every request is both slow and rate-limit-visible.
@@ -1425,7 +1486,7 @@ GET {base}/crumbIssuer/api/json
   -> { "crumb": "a1b2...", "crumbRequestField": "Jenkins-Crumb" }
 ```
 
-Send it as a header named by `crumbRequestField` on every POST. **A 404 means CSRF protection is disabled** - not an error, just skip the header. On a `403` whose body contains `No valid crumb`, refetch the crumb and retry **once**. Never loop.
+Send it as a header named by `crumbRequestField` on every POST made with **password** auth; API-token requests are crumb-exempt (§9.2). **A 404 means CSRF protection is disabled** - not an error, just skip the header. On a `403` whose body contains `No valid crumb`, refetch the crumb and retry **once**. Never loop.
 
 ### B.3 Server navigation
 
@@ -1433,7 +1494,7 @@ Send it as a header named by `crumbRequestField` on every POST. **A 404 means CS
 GET {base}/api/json?tree=jobs[name,url,_class]
 ```
 
-Top level only. **Folders nest their children under `jobs` and must be recursed.** A folder's `_class` is:
+Top level only. **Folders nest their children under `jobs` and must be recursed**, several levels per request with a nested `tree=` (§9.4). Recurse into any item that has a `jobs` array. A folder's `_class` is:
 
 ```
 com.cloudbees.hudson.plugins.folder.Folder
@@ -1444,6 +1505,7 @@ Other `_class` values worth recognising:
 | `_class` | Meaning |
 |---|---|
 | `org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject` | multibranch pipeline |
+| `jenkins.branch.OrganizationFolder` | organization folder (GitHub/Bitbucket org scan); its children are multibranch projects named after each repository |
 | `org.jenkinsci.plugins.workflow.job.WorkflowJob` | pipeline job |
 | `hudson.model.FreeStyleProject` | freestyle job |
 | `hudson.matrix.MatrixProject` | matrix job |
@@ -1454,6 +1516,8 @@ Other `_class` values worth recognising:
 ```
 GET {base}/job/{mb}/api/json?tree=jobs[name,url]
 ```
+
+Child names are URL-encoded once (`feature%2FORD-214`) and must be encoded again in a path (`job/feature%252FORD-214`; Day-0 `05.mbjobs.json`). Pull-request children are named `PR-{n}`. A branch with an open PR may exist **only** as its PR job (§9.4). Returned `url` fields use Jenkins' configured root URL. Rebase them onto the configured base.
 
 ### B.4 Builds
 
@@ -1469,7 +1533,7 @@ Causes and the triggering commit:
 GET {build}/api/json?tree=actions[causes[shortDescription],lastBuiltRevision[SHA1,branch[name]],remoteUrls]
 ```
 
-`remoteUrls` is the **only** way to learn a job's git remote, and it exists only per build. See §9.4.
+`remoteUrls` is the **only** way to learn a job's git remote, and it exists only per build. Check every `BuildData` action (shared libraries add their own) and normalise URLs before comparing. See §9.4.
 
 ### B.5 Console output
 
@@ -1480,7 +1544,7 @@ GET {build}/api/json?tree=actions[causes[shortDescription],lastBuiltRevision[SHA
 
 The incremental call returns bytes from `start` onward, with:
 
-- `X-Text-Size` -> the offset to use next
+- `X-Text-Size` -> the offset to use next (opaque: a raw-log offset, not the body's length, §9.5)
 - `X-More-Data: true` -> the build is still running
 
 Poll every 2 seconds while running. Append only the delta. Stop when `X-More-Data` is absent.
@@ -1493,10 +1557,11 @@ Poll every 2 seconds while running. Append only the delta. Stop when `X-More-Dat
 GET {build}/wfapi/describe
 ```
 
-Requires the `pipeline-stage-view` plugin, present on **147,819 of 230,038** servers with `git` = **64.3%**. Returns stage `name`, `status`, `startTimeMillis`, `durationMillis`, and a `nodeId` per stage. Per-node detail:
+Served by `pipeline-rest-api` (152,099 of 230,038 = **66.1%**) and installed in practice with `pipeline-stage-view` (147,819 = **64.3%**). Returns, per stage, `id`, `name`, `status`, `startTimeMillis`, `durationMillis`, `pauseDurationMillis` and, for a failed stage, `error.message` + `error.type` (Day-0 `12.wfapi.json`). The stage's node id is the field `id`; there is no `nodeId` field. Per-node detail:
 
 ```
-GET {build}/execution/node/{nodeId}/wfapi/describe
+GET {build}/execution/node/{id}/wfapi/describe
+GET {build}/execution/node/{id}/wfapi/log          <- per-node log text; exact for parallel branches (verify: re-check R2)
 ```
 
 **Treat this as a progressive enhancement.** When it 404s, parse `/consoleText` (§9.3). When it succeeds, use its timings and do not show invented ones.
@@ -1518,7 +1583,7 @@ GET {build}/testReport/api/json
                              "errorStackTrace": "...  at com.company.OrderService.compute(OrderService.java:88)" } ] } ] }
 ```
 
-A build with no tests returns a **404**. That is normal and must render as "no test results", not as an error.
+A build with no tests returns a **404**. That is normal and must render as "no test results", not as an error. The 404 body is an HTML page, not JSON, so branch on the status code before parsing. Each suite carries `enclosingBlockNames` and `nodeId`, which map its tests to a stage.
 
 ### B.8 Jenkinsfile lint
 
@@ -1526,10 +1591,10 @@ A build with no tests returns a **404**. That is normal and must render as "no t
 POST {base}/pipeline-model-converter/validate
   Content-Type: application/x-www-form-urlencoded
   jenkinsfile={url-encoded Jenkinsfile text}
-  {crumbRequestField}: {crumb}
+  {crumbRequestField}: {crumb}        <- password auth only
 ```
 
-Returns `Jenkinsfile successfully validated.` or the linter's error text. Requires `pipeline-model-definition`, present on **221,612** servers of ~230,038 with `git` = **~96%**.
+Returns `Jenkinsfile successfully validated.` or the linter's error text. It checks **structure only**: unknown step names pass (Day-0 behaviour 2), so never present it as full static analysis. Requires `pipeline-model-definition`, present on **221,612** servers of ~230,038 with `git` = **~96%**.
 
 **Send the editor's buffer, not the saved file**, and render the response in a selectable, copyable panel. Both are deliberate - see §7.4 and the two complaints that killed the 148,027-download linter.
 
@@ -1692,18 +1757,19 @@ The charter's standing rule is that every claim is either measured or labelled. 
 | Claim | Figure | Source |
 |---|---|---|
 | The keyword `jenkins` returns this many plugin listings | **38** | JetBrains Marketplace search API |
-| Downloads across the top 11 Jenkins plugins | **~970,000** | Marketplace search API |
-| Live paid vendors in the Jenkins space | **3** | `pricingModel` + `productCode` |
-| Downloads those three paid vendors hold between them | **200,607** | Marketplace search API |
+| Downloads across the top 14 Jenkins plugins | **969,258** | Marketplace search API (sum of §3.1 rows 1-14) |
+| Live paid products in the Jenkins space | **3**, from **2** vendors | `pricingModel` + `productCode` |
+| Downloads those three paid products hold between them | **200,607** | Marketplace search API |
 | The top paid Jenkins plugin's downloads | **157,778** | Marketplace search API |
 | What that top paid plugin actually sells | syntax highlighting only | Its listing, and its reviews |
 | Downloads of the top Jenkins plugin, which is free | **433,254** | Marketplace search API |
 | `pipeline-stage-view` installations | **147,819** | Jenkins update centre |
 | `git` plugin installations | **230,038** | Jenkins update centre |
 | **`pipeline-stage-view` / `git`** | **64.3%** | Calculated |
+| `pipeline-rest-api` (serves `wfapi`) / `git` | **66.1%** | Calculated |
 | `pipeline-model-definition` / `git` | ~**96%** | Calculated |
 | `[Pipeline] // stage` occurrences on GitHub | **4,424 files** | GitHub code search |
-| Stages recovered from a real 237-line console by the parser | **3, with correct boundaries** | Local verification, `_preflight3.txt` |
+| Stages recovered from a real 237-line console by the parser | **3, with correct boundaries** | Local verification at charter time (source file not committed). Reproduced live at Day-0: 4 stages incl. the synthetic `Declarative: Checkout SCM` (`docs/fixtures/09.parse-main.json`) |
 | Plugins found for `hudson` / `bamboo` / `appveyor` / `tekton` / `spinnaker` | 3 / 2 / **0** / **0** / **0** | Marketplace search API |
 | Name availability for `stagecraft` | **`total: 0`** | Marketplace search API |
 | Median paid plugin, lifetime downloads | **1,411** | Full marketplace scan |
@@ -1714,7 +1780,7 @@ The charter's standing rule is that every claim is either measured or labelled. 
 | Vendor share of the sale price | **85%** | JetBrains vendor terms |
 | Review density: bundled noise / real installs | 0.000-0.006 / 0.014-1.810 | Calculated from votes and downloads |
 | `GitHub Actions Manager` review density | **0.018** | 14 votes / 791,388 downloads |
-| `GitLab CICD` review density | **0.075** | 21 votes / 28,037 downloads |
+| `GitLab CICD` review density | **0.749** | 21 votes / 28,037 downloads × 1,000 (corrected on review; first stated as 0.075) |
 | `Bitbucket Integration Pro` review density | **1.810** | 491 votes |
 | Trials observed in this space | **0, 7, 30 days** | `PJENKINSFPRO`, `PJENKINSFILE`, `PCIINTG` |
 | `PipelinePilot for Jenkins` downloads and reviews | **62** and **0** | Marketplace detail API |
@@ -1724,6 +1790,10 @@ The charter's standing rule is that every claim is either measured or labelled. 
 | Claim | How it was verified |
 |---|---|
 | Per-stage logs do not require `pipeline-stage-view` | A real captured Jenkins console was fetched and segmented; 3 stages recovered with correct names and line counts |
+| Console stage markers, the `wfapi` 404 fallback, lint, and the crumb flow work on a live Jenkins 2.541.3, over HTTP and self-signed HTTPS | Day-0 gate, [`docs/day0-verification.md`](docs/day0-verification.md) (PASS with deviations) |
+| `remoteUrls` is exposed on build `BuildData` by default | Day-0 check 7 (2.541.3) |
+| API-token requests are exempt from CSRF crumbs | Day-0 check 15 |
+| The console-only parser cannot separate parallel branches and carries no stage status | Review: synthetic cases in `tools/test_parse_stages.py`; live confirmation pending (re-checks R2, R3) |
 | The stage marker format is universal, not server-specific | `[Pipeline] // stage` appears in 4,424 files on GitHub |
 | `PipelinePilot` is an authoring tool, not a build-outcome tool | Its listing copy and tags were read in full |
 | `stagecraft` is free as a plugin name | Marketplace search returned `total: 0` |
@@ -1734,12 +1804,13 @@ The charter's standing rule is that every claim is either measured or labelled. 
 | Assumption | Confidence | How to falsify |
 |---|---|---|
 | The 8-step browser walk is a genuine daily irritant | **High** - four plugins' users describe it unprompted | Watch which screen trial users open first |
-| Enterprise engineers will pay $29/year to remove it | **Medium** - the space has 3 paid vendors and 200,607 downloads, but only one of them sells anything this product does | The 60-day sales figure |
+| Enterprise engineers will pay $29/year to remove it | **Medium** - the space has 3 paid products from 2 vendors and 200,607 downloads, but only one of them sells anything this product does | The 60-day sales figure |
 | Trial-to-paid conversion will be 2-4% | **Low** - unmeasurable in advance | Only after 60 days live |
-| The parser handles every real-world pipeline shape | **Medium-high** - proved on one real console and one documented format | The Day-0 gate, item 9, and the fixture set |
+| The console parser handles every real-world pipeline shape | **Medium** for sequential and nested stages (two real servers plus synthetic nested cases). **Known not to** separate parallel branches or give status; that needs `wfapi` | Day-0 re-checks R2, R3 |
 | Enterprises will accept a `.zip` offline install instead of blocking the plugin | **Low** | The first ten enterprise tickets |
 | The git-remote-to-job match will work on arbitrary naming | **Medium** - the manual pinning fallback is what makes this safe | Day-0 items 4-7; if it fails, pinning carries the product |
-| Recommended workaround: `remoteUrls` is exposed by default on recent LTS | **Medium** | Day-0 item 7 |
+| A branch with an open pull request can be found through its `PR-N` job | **Medium** | Day-0 re-check R8 |
+| `remoteUrls` is exposed by default on LTS versions older than 2.541.3 | **Medium**: confirmed on 2.541.3 only (Day-0 check 7) | Day-0 re-check R10 |
 
 ### D.4 Unknown — and it must stay labelled unknown
 
@@ -1763,12 +1834,12 @@ In descending order of decisiveness:
 The evidence for this pick is stronger than for either of the two earlier ones, on five specific counts:
 
 1. **Measured demand:** ~970,000 downloads across top Jenkins IDE plugins, from a keyword with only 38 results.
-2. **A proven payer:** three paid vendors and 200,607 downloads between them, in a space where the top paid plugin sells *only syntax highlighting*.
+2. **A proven payer:** three paid products from two vendors and 200,607 downloads between them, in a space where the top paid plugin sells *only syntax highlighting*.
 3. **A universal, documented failure mode:** nine classes of complaint (A-I) across five independent plugins, all traceable to one root cause - connecting to the server instead of to the job.
-4. **A technical de-risking that no competitor did:** per-stage logs proven to work without the optional plugin that a third of servers lack, verified against a real captured console.
+4. **A technical de-risking that no competitor did:** per-stage logs for sequential and nested stages proven to work without the optional plugin that a third of servers lack. Verified against a real captured console, then on a live server at Day-0. Parallel stages and stage status still need that plugin, and the product says so.
 5. **A distribution channel that works without a following:** the Marketplace itself, with 38 results deep.
 
-The evidence against it is one number, and it is stated in full in section 5.3: **CI-in-IDE converts at a review density of 0.014-0.018, versus 1.810 for PR-review-in-IDE.** The best-funded company in the world at exactly this product could not make its users write reviews.
+The evidence against it is one comparison, stated in full and corrected in section 5.3: **the freemium CI-in-IDE leader draws 0.018 reviews per 1,000 downloads, versus 1.810 for PR-review-in-IDE.** The one paid CI plugin measured draws 0.749. That makes the gap at least partly about freemium, and it measures reviews, not payments. It is still the reason to plan for the base case, not the excellent one.
 
 That is the trade. Build it for the ceiling - 200,607 potential paying installs and a top plugin at 157,778 - and accept that the base case is a few hundred dollars a year. Do not start it expecting the reverse.
 

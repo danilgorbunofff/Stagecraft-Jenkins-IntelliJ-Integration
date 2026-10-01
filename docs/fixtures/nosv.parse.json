@@ -5,18 +5,35 @@
       "name": "Build",
       "firstLine": 7,
       "lastLine": 10,
-      "logLines": 4
+      "logLines": 4,
+      "parent": null,
+      "synthetic": false,
+      "interleaved": false,
+      "skipped": null,
+      "open": false
     },
     {
       "name": "Ship",
       "firstLine": 13,
       "lastLine": 16,
-      "logLines": 4
+      "logLines": 4,
+      "parent": null,
+      "synthetic": false,
+      "interleaved": false,
+      "skipped": null,
+      "open": false
     }
   ],
   "diagnostics": {
     "stackLeftAtEnd": 0,
     "endMarkerSeen": true,
-    "isPipelineLog": true
+    "isPipelineLog": true,
+    "fallbackMode": "stages",
+    "result": "SUCCESS",
+    "firstErrorLine": null,
+    "firstErrorStage": null,
+    "inferredFailedStage": null,
+    "parallelRegions": [],
+    "strayStageClose": 0
   }
 }

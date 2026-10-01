@@ -4,6 +4,13 @@
   "diagnostics": {
     "stackLeftAtEnd": 0,
     "endMarkerSeen": false,
-    "isPipelineLog": false
+    "isPipelineLog": false,
+    "fallbackMode": "plain-log",
+    "result": "FAILURE",
+    "firstErrorLine": 8,
+    "firstErrorStage": null,
+    "inferredFailedStage": null,
+    "parallelRegions": [],
+    "strayStageClose": 0
   }
 }
