@@ -1,0 +1,20 @@
+[versions]
+kotlin = "2.4.20"
+intellijPlatform = "2.19.0"
+# IntelliJ Platform SDK target for development. The compatibility matrix of every
+# supported IDE is built on Day 13 (§9.8); this is only the compile-time target.
+idea = "2025.2"
+kotlinxSerialization = "1.11.0"
+junit = "5.14.1"
+junit4 = "4.13.2"
+
+[libraries]
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
+junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter" }
+junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
+junit4 = { module = "junit:junit", version.ref = "junit4" }
+
+[plugins]
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+intellij-platform = { id = "org.jetbrains.intellij.platform", version.ref = "intellijPlatform" }

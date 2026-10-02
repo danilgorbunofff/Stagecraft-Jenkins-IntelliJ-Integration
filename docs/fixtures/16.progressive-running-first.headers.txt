@@ -1,0 +1,9 @@
+Vary: Accept-Encoding
+X-Content-Type-Options: nosniff
+Content-Security-Policy-Report-Only: base-uri 'none'; default-src 'self'; form-action 'self'; frame-ancestors 'self'; img-src 'self' data:; script-src 'report-sample' 'self' usage.jenkins.io; style-src 'report-sample' 'self' 'unsafe-inline';
+X-Text-Size: 4033
+X-More-Data: true
+Content-Length: 4050
+Content-Type: text/plain;charset=utf-8
+Date: Fri, 02 Oct 2026 06:11:20 GMT
+Server: Jetty(12.1.5)

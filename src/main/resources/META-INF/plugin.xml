@@ -1,0 +1,23 @@
+<idea-plugin>
+    <id>dev.stagecraft.jenkins</id>
+    <name>Stagecraft</name>
+    <vendor>Stagecraft</vendor>
+
+    <description><![CDATA[
+    <p>A Jenkins build and log viewer for JetBrains IDEs, built around the things that make other
+    Jenkins plugins unusable: folder and multibranch job discovery that actually finds your job,
+    per-stage logs for declarative pipelines, live console output that keeps up, and network
+    failures that say what went wrong instead of freezing the IDE.</p>
+    <p>Works against Jenkins 2.204.1 LTS and later, with an API token, behind a proxy, and over
+    HTTPS with a certificate you have explicitly trusted.</p>
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow id="Stagecraft"
+                    anchor="right"
+                    icon="AllIcons.Toolwindows.ToolWindowBuild"
+                    factoryClass="dev.stagecraft.ui.BuildsToolWindowFactory"/>
+    </extensions>
+</idea-plugin>

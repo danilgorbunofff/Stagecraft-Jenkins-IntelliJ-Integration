@@ -1,0 +1,8 @@
+# Recorded Jenkins evidence in docs/fixtures is byte-exact: the CRLF counts and Content-Length
+# values in it are the measurement. Never let git rewrite its line endings.
+docs/fixtures/** -text
+
+*.kt text eol=lf
+*.kts text eol=lf
+gradlew text eol=lf
+*.toml text eol=lf
