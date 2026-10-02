@@ -1,0 +1,36 @@
+Started by user admin
+[Pipeline] Start of Pipeline
+[Pipeline] node
+Running on Jenkins in /var/jenkins_home/workspace/stagecraft/skipped-post-demo
+[Pipeline] {
+[Pipeline] stage
+[Pipeline] { (Runs)
+[Pipeline] echo
+runs fine
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Skipped)
+Stage "Skipped" skipped due to when conditional
+[Pipeline] getContext
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Fails)
+[Pipeline] sh
++ exit 7
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Declarative: Post Actions)
+[Pipeline] echo
+POST ALWAYS
+[Pipeline] echo
+POST FAILURE RAN
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] }
+[Pipeline] // node
+[Pipeline] End of Pipeline
+ERROR: script returned exit code 7
+Finished: FAILURE

@@ -9,6 +9,14 @@ What console text can and cannot tell you:
   no per-branch prefix, so interleaved output cannot be attributed to a branch.
   Such stages get the whole parallel region as their range and
   `interleaved: true`.
+- Which lane a stage inside a parallel region belongs to: not recoverable, and
+  not guessed. All `Branch: <label>` frames are opened before any lane body
+  runs, and each lane's frames stay open while the other lanes run, so the
+  enclosing brace is usually a sibling lane rather than the parent. Lanes are
+  attributed from the `Branch:` declarations (by name, else by declaration
+  order and flagged `laneBinding: positional`); anything deeper is reported
+  against the parallel stage with `parentUncertain: true` instead of being
+  fabricated into a sibling lane.
 - Stage status: not present. Skipped stages are recognised from Declarative's
   `Stage "X" skipped due to ...` line; the failed stage is *inferred* and
   labelled with the basis of the inference. Never present it as fact.
@@ -62,16 +70,18 @@ def parse_console_text(text):
         m = NAMED_OPEN.match(line)
         if m:
             name = m.group(1)
-            if name.startswith(BRANCH_PREFIX) and regions:
-                regions[-1]['branches'].append(name[len(BRANCH_PREFIX):])
-                stack.append({'kind': 'branch', 'first': i})
+            if name.startswith(BRANCH_PREFIX):
+                stack.append({'kind': 'branch', 'first': i,
+                              'label': name[len(BRANCH_PREFIX):]})
+                if regions:
+                    regions[-1]['branches'].append(name[len(BRANCH_PREFIX):])
                 continue
-            parent = next((f['stage'] for f in reversed(stack) if f['kind'] == 'stage'), None)
+            parent, placement = _place_stage(stack, regions, name)
             stage = {'name': name, 'first': i, 'last': None,
                      'parent': parent['name'] if parent else None,
                      'depth': (parent['depth'] + 1) if parent else 0,
                      'synthetic': name.startswith(SYNTHETIC_PREFIX),
-                     'interleaved': bool(regions), 'skipped': None}
+                     'interleaved': bool(regions), 'skipped': None, **placement}
             stages.append(stage)
             stack.append({'kind': 'stage', 'first': i, 'stage': stage})
             if regions:
@@ -97,7 +107,8 @@ def parse_console_text(text):
             last_popped = None
             continue
         if PARALLEL_OPEN.match(line):
-            regions.append({'first': i, 'base': len(stack), 'stages': [], 'branches': []})
+            regions.append({'first': i, 'base': len(stack), 'stages': [],
+                            'branches': [], 'claimed': set()})
             continue
         if PARALLEL_CLOSE.match(line) and regions:
             region = regions.pop()
@@ -138,9 +149,45 @@ def parse_console_text(text):
         'firstErrorStage': _innermost_stage_at(stages, first_error),
         'inferredFailedStage': _infer_failed_stage(stages, result, first_error),
         'parallelRegions': closed_regions,
+        'unattributedStages': [s['name'] for s in stages if s['parentUncertain']],
         'strayStageClose': stray_stage_close,
     }
     return stages, diagnostics
+
+
+def _nearest_stage(frames):
+    return next((f['stage'] for f in reversed(frames) if f['kind'] == 'stage'), None)
+
+
+def _place_stage(stack, regions, name):
+    """Return (parent stage or None, placement extras) for a stage frame opening now.
+
+    Outside `parallel` the nearest open stage frame really is the parent. Inside a
+    parallel region it usually is not: the lanes run concurrently, so that frame is
+    a sibling lane. See the module docstring - nothing here is presented as fact.
+    """
+    if not regions:
+        return _nearest_stage(stack), {'branch': None, 'laneBinding': None,
+                                       'parentUncertain': False}
+    region = regions[-1]
+    owner = _nearest_stage(stack[:region['base']])
+    unclaimed = [b for b in region['branches'] if b not in region['claimed']]
+    open_lanes = [f for f in stack[region['base']:] if f['kind'] == 'stage']
+    if name in unclaimed:
+        region['claimed'].add(name)
+        return owner, {'branch': name, 'laneBinding': 'name', 'parentUncertain': False}
+    # Declarative emits every `Branch:` frame before any lane body runs, so while the
+    # lanes are still being opened the k-th unclaimed lane is the k-th unclaimed branch.
+    if unclaimed and all(f['stage']['branch'] for f in open_lanes):
+        label = unclaimed[0]
+        region['claimed'].add(label)
+        return owner, {'branch': label, 'laneBinding': 'positional', 'parentUncertain': True}
+    if len(open_lanes) == 1 and open_lanes[0]['stage']['branch']:
+        lane = open_lanes[0]['stage']['branch']
+        return open_lanes[0]['stage'], {'branch': lane, 'laneBinding': None,
+                                        'parentUncertain': False}
+    return owner, {'branch': None, 'laneBinding': None,
+                   'parentUncertain': bool(open_lanes) or bool(region['branches'])}
 
 
 def _innermost_stage_at(stages, line):
@@ -176,7 +223,9 @@ def to_json(stages, diagnostics):
         'stages': [{'name': s['name'], 'firstLine': s['first'], 'lastLine': s['last'],
                     'logLines': s['last'] - s['first'] + 1, 'parent': s['parent'],
                     'synthetic': s['synthetic'], 'interleaved': s['interleaved'],
-                    'skipped': s['skipped'], 'open': s.get('open', False)}
+                    'skipped': s['skipped'], 'open': s.get('open', False),
+                    'branch': s['branch'], 'laneBinding': s['laneBinding'],
+                    'parentUncertain': s['parentUncertain']}
                    for s in stages],
         'diagnostics': diagnostics,
     }

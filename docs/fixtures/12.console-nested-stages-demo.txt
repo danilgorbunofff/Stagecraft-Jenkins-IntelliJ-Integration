@@ -1,0 +1,31 @@
+Started by user admin
+[Pipeline] Start of Pipeline
+[Pipeline] node
+Running on Jenkins in /var/jenkins_home/workspace/stagecraft/nested-stages-demo
+[Pipeline] {
+[Pipeline] stage
+[Pipeline] { (Outer)
+[Pipeline] stage
+[Pipeline] { (Inner One)
+[Pipeline] echo
+inner one
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Inner Two)
+[Pipeline] echo
+inner two
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (After Outer)
+[Pipeline] echo
+after outer
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] }
+[Pipeline] // node
+[Pipeline] End of Pipeline
+Finished: SUCCESS

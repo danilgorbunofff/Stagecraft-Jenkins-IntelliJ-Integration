@@ -73,6 +73,82 @@ class RealServerFixtures(unittest.TestCase):
         self.assertEqual(d['firstErrorLine'], 8)  # "Build step 'Execute shell' marked build as failure"
 
 
+class RealServerParallelFixtures(unittest.TestCase):
+    """Console output captured from live builds (docs/day0-verification.md, R2/R3).
+
+    All of these were produced by parallel-demo / parallel-nested style jobs where
+    every branch frame opens before any lane body runs, so the enclosing brace is a
+    sibling lane rather than the real parent.
+    """
+
+    def test_parallel_lanes_are_siblings_under_the_parallel_stage(self):
+        r = parse(fixture('10.console-parallel-demo.txt'))
+        self.assertEqual([s['name'] for s in r['stages']],
+                         ['Setup', 'Parallel', 'Branch A', 'Branch B', 'Branch C', 'Teardown'])
+        for s in r['stages']:
+            if s['name'].startswith('Branch '):
+                self.assertEqual(s['parent'], 'Parallel')   # not chained A -> B -> C
+                self.assertEqual(s['branch'], s['name'])
+                self.assertEqual(s['laneBinding'], 'name')
+                self.assertFalse(s['parentUncertain'])
+        self.assertEqual(r['diagnostics']['unattributedStages'], [])
+        self.assertEqual(r['diagnostics']['parallelRegions'],
+                         [{'firstLine': 14, 'lastLine': 51,
+                           'branches': ['Branch A', 'Branch B', 'Branch C']}])
+
+    def test_stage_nested_in_a_lane_is_not_attributed_to_a_sibling_lane(self):
+        # Lane A and Lane B open before either body runs, so there is no data that
+        # binds A Inner to Lane A. Attaching it to Lane B would be a fabrication.
+        r = parse(fixture('11.console-parallel-nested.txt'))
+        by_name = {s['name']: s for s in r['stages']}
+        for lane in ('Lane A', 'Lane B'):
+            self.assertEqual(by_name[lane]['parent'], 'Lane Parallel')
+            self.assertEqual(by_name[lane]['branch'], lane)
+        for inner in ('A Inner', 'B Inner'):
+            self.assertEqual(by_name[inner]['parent'], 'Lane Parallel')
+            self.assertIsNone(by_name[inner]['branch'])
+            self.assertTrue(by_name[inner]['parentUncertain'])
+        self.assertEqual(r['diagnostics']['unattributedStages'], ['A Inner', 'B Inner'])
+
+    def test_sequential_lane_keeps_its_own_nesting(self):
+        # A lane whose body is sequential must still nest: only one lane frame is open,
+        # so the enclosing brace is unambiguous.
+        text = log(OPEN, '[Pipeline] node', '[Pipeline] {',
+                   '[Pipeline] stage', '[Pipeline] { (Par)',
+                   '[Pipeline] parallel',
+                   '[Pipeline] { (Branch: L1)',
+                   '[Pipeline] stage', '[Pipeline] { (L1)',
+                   '[Pipeline] stage', '[Pipeline] { (L1 Inner)',
+                   'inner', '[Pipeline] }', '[Pipeline] // stage',
+                   '[Pipeline] }', '[Pipeline] // stage',
+                   '[Pipeline] }', '[Pipeline] // parallel',
+                   '[Pipeline] }', '[Pipeline] // stage',
+                   '[Pipeline] }', '[Pipeline] }', '[Pipeline] // node', END)
+        by_name = {s['name']: s for s in parse(text)['stages']}
+        self.assertEqual(by_name['L1']['parent'], 'Par')
+        self.assertEqual(by_name['L1']['branch'], 'L1')
+        self.assertEqual(by_name['L1 Inner']['parent'], 'L1')
+        self.assertFalse(by_name['L1 Inner']['parentUncertain'])
+
+    def test_real_nested_stages(self):
+        r = parse(fixture('12.console-nested-stages-demo.txt'))
+        by_name = {s['name']: s for s in r['stages']}
+        self.assertEqual(by_name['Inner One']['parent'], 'Outer')
+        self.assertEqual(by_name['Inner Two']['parent'], 'Outer')
+        self.assertIsNone(by_name['After Outer']['parent'])
+        self.assertEqual(r['stageCount'], 4)
+
+    def test_real_skipped_stage_and_post_actions(self):
+        r = parse(fixture('13.console-skipped-post-demo.txt'))
+        by_name = {s['name']: s for s in r['stages']}
+        self.assertEqual(by_name['Skipped']['skipped'], 'when conditional')
+        self.assertTrue(by_name['Declarative: Post Actions']['synthetic'])
+        self.assertEqual(r['diagnostics']['result'], 'FAILURE')
+        self.assertEqual(r['diagnostics']['inferredFailedStage'],
+                         {'name': 'Fails', 'basis': 'last-executed-stage'})
+        self.assertEqual(r['diagnostics']['firstErrorLine'], 35)
+
+
 class SyntheticShapes(unittest.TestCase):
 
     def test_nested_stage_close_does_not_truncate_outer(self):

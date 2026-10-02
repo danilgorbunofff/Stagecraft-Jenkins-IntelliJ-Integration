@@ -1,0 +1,45 @@
+Started
+[Pipeline] Start of Pipeline
+[Pipeline] node
+Running on Jenkins in /var/jenkins_home/workspace/stagecraft/parallel-nested
+[Pipeline] {
+[Pipeline] stage
+[Pipeline] { (Lane Parallel)
+[Pipeline] parallel
+[Pipeline] { (Branch: Lane A)
+[Pipeline] { (Branch: Lane B)
+[Pipeline] stage
+[Pipeline] { (Lane A)
+[Pipeline] stage
+[Pipeline] { (Lane B)
+[Pipeline] stage
+[Pipeline] { (A Inner)
+[Pipeline] stage
+[Pipeline] { (B Inner)
+[Pipeline] echo
+A inner ran
+[Pipeline] }
+[Pipeline] echo
+B inner ran
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] // stage
+[Pipeline] }
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] // stage
+[Pipeline] }
+[Pipeline] }
+[Pipeline] // parallel
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (After)
+[Pipeline] echo
+after ran
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] }
+[Pipeline] // node
+[Pipeline] End of Pipeline
+Finished: SUCCESS

@@ -1,0 +1,63 @@
+Started by user admin
+[Pipeline] Start of Pipeline
+[Pipeline] node
+Running on Jenkins in /var/jenkins_home/workspace/stagecraft/parallel-demo
+[Pipeline] {
+[Pipeline] stage
+[Pipeline] { (Setup)
+[Pipeline] echo
+setup done
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Parallel)
+[Pipeline] parallel
+[Pipeline] { (Branch: Branch A)
+[Pipeline] { (Branch: Branch B)
+[Pipeline] { (Branch: Branch C)
+[Pipeline] stage
+[Pipeline] { (Branch A)
+[Pipeline] stage
+[Pipeline] { (Branch B)
+[Pipeline] stage
+[Pipeline] { (Branch C)
+[Pipeline] echo
+A start
+[Pipeline] sleep
+Sleeping for 5 sec
+[Pipeline] echo
+B start
+[Pipeline] sleep
+Sleeping for 8 sec
+[Pipeline] echo
+C start
+[Pipeline] sleep
+Sleeping for 3 sec
+[Pipeline] echo
+C end
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] }
+[Pipeline] echo
+A end
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] }
+[Pipeline] echo
+B end
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] }
+[Pipeline] // parallel
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Teardown)
+[Pipeline] echo
+teardown done
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] }
+[Pipeline] // node
+[Pipeline] End of Pipeline
+Finished: SUCCESS
