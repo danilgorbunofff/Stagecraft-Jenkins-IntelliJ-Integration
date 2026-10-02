@@ -19,5 +19,9 @@
                     anchor="right"
                     icon="AllIcons.Toolwindows.ToolWindowBuild"
                     factoryClass="dev.stagecraft.ui.BuildsToolWindowFactory"/>
+        <projectConfigurable instance="dev.stagecraft.ui.settings.StagecraftConfigurable"
+                             id="dev.stagecraft.settings"
+                             displayName="Stagecraft"
+                             parentId="tools"/>
     </extensions>
 </idea-plugin>

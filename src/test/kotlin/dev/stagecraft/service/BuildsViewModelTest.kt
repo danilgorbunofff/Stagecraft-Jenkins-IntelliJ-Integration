@@ -63,6 +63,16 @@ class BuildsViewModelTest {
 
     private fun configured() = StagecraftState(serverUrl = base, user = "admin")
 
+    /** A model whose executor runs inline, so a state is final as soon as the call returns. */
+    private fun viewModel(
+        credentials: CredentialStore = InMemoryCredentialStore().apply { save(base, "admin", "token") },
+        fake: FakeTransport = transport(),
+        cacheDir: File? = null,
+    ): BuildsViewModel = BuildsViewModel(
+        DefaultBuildsLoader(credentials, factory(fake), cacheDir),
+        Executor { it.run() },
+    )
+
     private fun ctx(
         remote: String? = "git@github.com:corp/svc.git",
         branch: String? = "main",
@@ -316,6 +326,55 @@ class BuildsViewModelTest {
 
         assertEquals(ToolWindowState.Unconfigured, state)
         assertEquals(0, fake.count)
+    }
+
+    // ------------------------------------------------- placeholder vs. the first load
+
+    @Test
+    fun `a fresh model says it is checking, not that nothing is configured`() {
+        val model = viewModel(cacheDir = null)
+
+        // The panel paints this value before any load runs; an Unconfigured default would tell a
+        // configured project, in the plugin's own words, that its settings are gone.
+        assertTrue(model.state is ToolWindowState.Loading, "was ${model.state}")
+    }
+
+    @Test
+    fun `the placeholder reports saved settings without touching the network`() {
+        val fake = transport()
+        val model = viewModel(cacheDir = null, fake = fake)
+        val seen = ArrayList<ToolWindowState>()
+        model.onState = { seen += it }
+
+        model.showPlaceholder(isConfigured = false)
+
+        assertEquals(listOf<ToolWindowState>(ToolWindowState.Unconfigured), seen)
+        assertEquals(0, fake.count)
+    }
+
+    @Test
+    fun `the placeholder leaves a configured project checking`() {
+        val model = viewModel(cacheDir = null)
+        val seen = ArrayList<ToolWindowState>()
+        model.onState = { seen += it }
+
+        model.showPlaceholder(isConfigured = true)
+
+        assertEquals(listOf<ToolWindowState>(ToolWindowState.Loading(null)), seen)
+    }
+
+    @Test
+    fun `the placeholder cannot overwrite a load that has already started`() {
+        val model = viewModel(cacheDir = null)
+
+        model.paintFirst(configured(), ctx())
+        val settled = model.state
+        model.showPlaceholder(isConfigured = false)
+
+        // An unguarded placeholder would put Unconfigured here, i.e. flip the window back to
+        // "configure me" over a load that is already running.
+        assertEquals(settled, model.state)
+        assertEquals(ToolWindowState.Loading(null), model.state)
     }
 
     // --------------------------------------------------------------- the model

@@ -188,17 +188,46 @@ class BuildsViewModel(
     private val executor: Executor,
 ) {
 
+    /**
+     * What the tool window shows before any load has run.
+     *
+     * It starts on [ToolWindowState.Loading] rather than [ToolWindowState.Unconfigured] because the
+     * panel paints whatever this is: a project that is already configured would be told, in the
+     * plugin's own words, that it has no Jenkins server yet and offered a Configure button, which
+     * reads as lost settings. "Checking this branch's builds..." is true of every project and is
+     * replaced by the real state as soon as [showPlaceholder] or a load answers.
+     */
     @Volatile
-    var state: ToolWindowState = ToolWindowState.Unconfigured
+    var state: ToolWindowState = ToolWindowState.Loading(null)
         private set
 
     var onState: ((ToolWindowState) -> Unit)? = null
+
+    /** Set on the executor, read from the EDT through [state]. */
+    @Volatile
+    private var started = false
+
+    /**
+     * Publish what the project's in-memory settings already say, before the I/O that cannot be
+     * instant - git and the cache read.
+     *
+     * [ToolWindowState.Unconfigured] is the one state answerable with no git, no disk and no network,
+     * and it is the one state that must not be shown late: it is wrong about a configured project,
+     * where the panel's placeholder would otherwise stand for as long as the first load takes. Does
+     * nothing once a load has been started, so a second tool window cannot put a spinner over a list
+     * that is already on screen.
+     */
+    fun showPlaceholder(isConfigured: Boolean) {
+        if (started) return
+        update(if (isConfigured) ToolWindowState.Loading(null) else ToolWindowState.Unconfigured)
+    }
 
     /**
      * First paint: disk-only, no network. The panel shows this instantly and a [refresh] refines
      * it on the executor right after.
      */
     fun paintFirst(state: StagecraftState, ctx: BranchContext): ToolWindowState {
+        started = true
         val next = loader.snapshotForFirstPaint(state, ctx)
         update(next)
         return next
@@ -206,9 +235,10 @@ class BuildsViewModel(
 
     /** Full load on the executor. Returns immediately; results arrive through [onState]. */
     fun refresh(config: StagecraftState, ctx: BranchContext) {
-        // An Unconfigured project must not flash a spinner for a load it cannot do yet — go
-        // straight to the load result when it lands.
-        if (state !is ToolWindowState.Unconfigured) {
+        started = true
+        // An unconfigured project must not flash a spinner for a load it cannot do: the load has
+        // nothing to wait for, so its Unconfigured answer should simply appear.
+        if (config.isConfigured) {
             update(ToolWindowState.Loading(null))
         }
         executor.execute {
