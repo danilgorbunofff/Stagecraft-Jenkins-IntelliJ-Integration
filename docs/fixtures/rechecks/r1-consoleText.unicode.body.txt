@@ -1,0 +1,21 @@
+Started by user admin
+[Pipeline] Start of Pipeline
+[Pipeline] node
+Running on Jenkins in /var/jenkins_home/workspace/stagecraft/unicode-lines
+[Pipeline] {
+[Pipeline] stage
+[Pipeline] { (Unicode)
+[Pipeline] echo
+ASCII line before
+[Pipeline] echo
+Привет, мир — ünïcödé ✓ 日本語
+[Pipeline] echo
+π ≈ 3.14159 · emoji 🚀
+[Pipeline] echo
+ASCII line after
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] }
+[Pipeline] // node
+[Pipeline] End of Pipeline
+Finished: SUCCESS

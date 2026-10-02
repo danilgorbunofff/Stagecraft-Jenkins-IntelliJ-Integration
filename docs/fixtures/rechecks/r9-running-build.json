@@ -1,0 +1,1 @@
+{"_class":"org.jenkinsci.plugins.workflow.job.WorkflowJob","builds":[{"_class":"org.jenkinsci.plugins.workflow.job.WorkflowRun","building":true,"duration":0,"estimatedDuration":-1,"number":1,"result":null,"timestamp":1790917740288,"url":"http://localhost:18080/job/stagecraft/job/long-run/1/"}]}

@@ -1,0 +1,5 @@
+Branch indexing
+Connecting to https://api.github.com with no credentials, anonymous access
+Jenkins-Imposed API Limiter: Current quota for Github API usage has 40 remaining (2 over budget). Next quota of 60 in 42 min. Sleeping for 6 min 3 sec.
+Jenkins is attempting to evenly distribute GitHub API requests. To configure a different rate limiting strategy, such as having Jenkins restrict GitHub API requests only when near or above the GitHub rate limit, go to "GitHub API usage" under "Configure System" in the Jenkins settings.
+Jenkins-Imposed API Limiter: Still sleeping, now only 3 min 1 sec remaining.

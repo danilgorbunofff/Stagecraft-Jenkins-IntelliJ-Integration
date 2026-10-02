@@ -1,0 +1,11 @@
+HTTP/1.1 200 OK
+Server: Jetty(12.1.5)
+Date: Fri, 02 Oct 2026 05:09:30 GMT
+Vary: Accept-Encoding
+X-Content-Type-Options: nosniff
+Content-Security-Policy-Report-Only: base-uri 'none'; default-src 'self'; form-action 'self'; frame-ancestors 'self'; img-src 'self' data:; script-src 'report-sample' 'self' usage.jenkins.io; style-src 'report-sample' 'self' 'unsafe-inline';
+Content-Type: text/plain;charset=utf-8
+X-Text-Size: 2815
+X-More-Data: true
+Content-Length: 0
+

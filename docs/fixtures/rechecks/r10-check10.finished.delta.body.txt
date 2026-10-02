@@ -1,0 +1,33 @@
++ echo tick 3
+tick 3
++ sleep 1
++ echo tick 4
+tick 4
++ sleep 1
++ echo tick 5
+tick 5
++ sleep 1
++ echo tick 6
+tick 6
++ sleep 1
++ echo tick 7
+tick 7
++ sleep 1
++ echo tick 8
+tick 8
++ sleep 1
++ echo tick 9
+tick 9
++ sleep 1
++ echo tick 10
+tick 10
++ sleep 1
++ echo tick 11
+tick 11
++ sleep 1
++ echo tick 12
+tick 12
++ sleep 1
++ echo R10 done
+R10 done
+Finished: SUCCESS

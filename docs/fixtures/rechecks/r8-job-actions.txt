@@ -1,0 +1,3 @@
+{"name": "main", "actions": ["jenkins.scm.api.metadata.ObjectMetadataAction", "jenkins.scm.api.metadata.PrimaryInstanceMetadataAction", "org.jenkinsci.plugins.displayurlapi.actions.JobDisplayAction", "com.cloudbees.plugins.credentials.ViewCredentialsAction"]}
+{"name": "feature%2FORD-214", "actions": ["jenkins.scm.api.metadata.ObjectMetadataAction", "org.jenkinsci.plugins.displayurlapi.actions.JobDisplayAction", "com.cloudbees.plugins.credentials.ViewCredentialsAction"]}
+{"name": "PR-1", "actions": ["jenkins.scm.api.metadata.ContributorMetadataAction", "jenkins.scm.api.metadata.ObjectMetadataAction", "org.jenkinsci.plugins.displayurlapi.actions.JobDisplayAction", "com.cloudbees.plugins.credentials.ViewCredentialsAction"]}

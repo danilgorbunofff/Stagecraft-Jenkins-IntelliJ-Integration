@@ -1,0 +1,38 @@
+Started by user admin
+[Fri Oct 02 05:29:49 UTC 2026] Starting branch indexing...
+Connecting to https://api.github.com with no credentials, anonymous access
+Examining danilgorbunofff/stagecraft-day0-fixture
+
+  Getting remote pull requests...
+
+  Checking branches...
+
+  Getting remote branches...
+
+    Checking branch main
+      ‘Jenkinsfile’ found
+    Met criteria
+Scheduled build for branch: main
+
+    Checking branch feature/ORD-214
+      ‘Jenkinsfile’ found
+    Met criteria
+Scheduled build for branch: feature/ORD-214
+
+    Checking branch feature/ORD-215
+Ignoring SCMHead{'feature/ORD-215'} because current strategy excludes branches that ARE also filed as a pull request
+
+  3 branches were processed
+
+  Checking pull-requests...
+
+    Checking pull request #1
+Jenkins-Imposed API Limiter: Current quota for Github API usage has 52 remaining (1 over budget). Next quota of 60 in 59 min. Sleeping for 5 min 22 sec.
+Jenkins is attempting to evenly distribute GitHub API requests. To configure a different rate limiting strategy, such as having Jenkins restrict GitHub API requests only when near or above the GitHub rate limit, go to "GitHub API usage" under "Configure System" in the Jenkins settings.
+Jenkins-Imposed API Limiter: Still sleeping, now only 2 min 19 sec remaining.
+Jenkins-Imposed API Limiter: Current quota for Github API usage has 47 remaining (3 over budget). Next quota of 60 in 54 min. Sleeping for 8 min 1 sec.
+Jenkins is attempting to evenly distribute GitHub API requests. To configure a different rate limiting strategy, such as having Jenkins restrict GitHub API requests only when near or above the GitHub rate limit, go to "GitHub API usage" under "Configure System" in the Jenkins settings.
+Jenkins-Imposed API Limiter: Still sleeping, now only 4 min 58 sec remaining.
+Jenkins-Imposed API Limiter: Still sleeping, now only 1 min 57 sec remaining.
+Jenkins-Imposed API Limiter: Current quota for Github API usage has 44 remaining (1 over budget). Next quota of 60 in 46 min. Sleeping for 4 min 16 sec.
+Jenkins is attempting to evenly distribute GitHub API requests. To configure a different rate limiting strategy, such as having Jenkins restrict GitHub API requests only when near or above the GitHub rate limit, go to "GitHub API usage" under "Configure System" in the Jenkins settings.
