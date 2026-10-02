@@ -247,3 +247,35 @@ class JobIndex private constructor(
                 .joinToString("") { "%02x".format(it) }
     }
 }
+
+/**
+ * A [JobNode] built from a name alone, for a pin that names a job the index does not hold.
+ *
+ * A pin is a user decision (§9.4 step 5), so an empty index, a job created after the last refresh
+ * or a tree cut off by [JobIndex.DEFAULT_MAX_JOBS] must not be able to drop it — but a name is all
+ * we have. [name] is read in Jenkins' own path spelling: `/` separates levels and each level is
+ * percent-encoded once, exactly as Jenkins reports `name`. Segments are normalised through a
+ * decode/encode round trip, so a name the user copied out of Jenkins (`svc/feature%2FORD-214`) and
+ * a decoded one are encoded exactly once rather than twice.
+ *
+ * [JobNode.kind] stays [JobKind.OTHER]: nothing in a name says whether a job is a multibranch
+ * container or a branch inside one, and guessing is the dishonesty the matcher exists to avoid.
+ * The caller that knows more (the matcher, once it has a branch) builds the child path instead.
+ */
+fun jobFromName(name: String, serverUrl: String = ""): JobNode {
+    val rawPath = name.trim().trim('/').split('/')
+        .filter { it.isNotEmpty() }
+        .map { JenkinsUrls.encodeSegment(JenkinsUrls.decodeSegment(it)) }
+    val decoded = rawPath.map { JenkinsUrls.decodeSegment(it) }
+    val base = if (serverUrl.isBlank()) "" else serverUrl.trimEnd('/') + "/"
+    return JobNode(
+        name = rawPath.lastOrNull() ?: name.trim(),
+        displayName = decoded.lastOrNull() ?: name.trim(),
+        fullName = decoded.joinToString("/"),
+        rawPath = rawPath,
+        className = null,
+        kind = JobKind.OTHER,
+        url = JenkinsUrls.jobUrl(base, rawPath),
+        depth = rawPath.size,
+    )
+}

@@ -126,9 +126,7 @@ class RemoteMatcher(
         val remote = RemoteInfo.parse(remoteUrl)
             ?: return MatchResult.Unresolved("\"$remoteUrl\" is not a git remote Stagecraft can name a job from")
 
-        index.pinFor(remote.key)?.let { pinned ->
-            return MatchResult.Matched(pinned, "pinned by you in Stagecraft's settings", certain = true)
-        }
+        index.pinFor(remote.key)?.let { pinned -> return pinnedMatch(pinned, branch) }
 
         val ranked = index.rank(remote)
         if (ranked.isEmpty()) {
@@ -145,6 +143,37 @@ class RemoteMatcher(
 
         val best = ranked.first()
         return MatchResult.Matched(best.job, best.reason, certain = best.tier >= EXACT_NAME_TIER)
+    }
+
+    /**
+     * §9.4 step 5: a pin is a user decision, so it is answered before any tier is consulted.
+     *
+     * A pinned *container* still needs its branch child, exactly like a ranked candidate does: the
+     * builds of `svc` are not the builds of `svc/main`. When the index holds that child we use it;
+     * when it does not — the pin names a job the index never saw, or the tree was truncated — the
+     * child path is built from the pin itself. Falling back to the closest name match instead, as
+     * this used to, showed the container's own builds under the user's pinned job.
+     *
+     * A pin that is itself a buildable job the index holds is used as it stands; the branch is
+     * context, not something to descend into.
+     */
+    private fun pinnedMatch(pinned: JobNode, branch: String?): MatchResult {
+        if (branch == null) return MatchResult.Matched(pinned, PIN_HOW, certain = true)
+
+        val how = "branch \"$branch\" of the job pinned in Stagecraft's settings (\"${pinned.displayName}\")"
+
+        index.childNamed(pinned, branch)?.let { child ->
+            return MatchResult.Matched(child, how, certain = true, branch = branch, branchJob = child)
+        }
+        if (!pinned.isContainer && index.jobs.any { it.rawPath == pinned.rawPath }) {
+            return MatchResult.Matched(pinned, PIN_HOW, certain = true, branch = branch)
+        }
+
+        // A path the user pinned is a path we can build: `.../job/<pinned>/job/<branch>`. It is
+        // still certain, because a wrong path fails loudly with a 404 rather than quietly showing
+        // somebody else's builds.
+        val child = jobFromName(pinned.rawPathString + "/" + JenkinsUrls.encodeSegment(branch), index.serverUrl)
+        return MatchResult.Matched(child, how, certain = true, branch = branch, branchJob = child)
     }
 
     private fun resolvePr(remote: RemoteInfo, ranked: List<JobIndex.RankedJob>, prNumber: Int): MatchResult {
@@ -196,6 +225,9 @@ class RemoteMatcher(
     companion object {
         /** Tiers at or above this are exact-name evidence; below it the matcher is guessing. */
         const val EXACT_NAME_TIER = 80
+
+        /** How a pin is explained, in one place so every pin path says the same thing. */
+        private const val PIN_HOW = "pinned by you in Stagecraft's settings"
     }
 }
 
