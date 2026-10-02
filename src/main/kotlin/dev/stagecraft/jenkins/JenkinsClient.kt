@@ -189,6 +189,15 @@ class JenkinsClient(
     fun buildApiJson(buildUrl: String, tree: String): String =
         JenkinsUrls.apiJson(buildScopedUrl(buildUrl, ""), tree)
 
+    /**
+     * The `actions` array of one build — where `remoteUrls` (which git remotes fed this build) and
+     * `lastBuiltRevision` (which branch) live. §9.4 step 3: this is the one-build confirmation.
+     */
+    fun buildActions(buildUrl: String): List<kotlinx.serialization.json.JsonObject> {
+        val url = buildApiJson(buildUrl, "actions[_class,remoteUrls,lastBuiltRevision[SHA1,branch[name]]]")
+        return parseBody(url, http.get(url)).objects("actions")
+    }
+
     private fun buildScopedUrl(buildUrl: String, suffix: String): String {
         val rebased = JenkinsUrls.rebase(http.baseUrl, buildUrl).trimEnd('/') + "/"
         return if (suffix.isEmpty()) rebased else rebased + suffix
