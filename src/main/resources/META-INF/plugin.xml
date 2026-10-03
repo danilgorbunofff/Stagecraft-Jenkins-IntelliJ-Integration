@@ -23,5 +23,17 @@
                              id="dev.stagecraft.settings"
                              displayName="Stagecraft"
                              parentId="tools"/>
+        <notificationGroup id="Stagecraft builds"
+                           displayName="Stagecraft builds"
+                           displayType="BALLOON"/>
     </extensions>
+
+    <actions>
+        <action id="dev.stagecraft.lintJenkinsfile"
+                class="dev.stagecraft.ui.LintAction"
+                text="Validate Jenkinsfile with Stagecraft"
+                description="Run the server's Jenkinsfile linter on this buffer, unsaved edits included">
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+        </action>
+    </actions>
 </idea-plugin>

@@ -380,6 +380,15 @@ class BuildsViewModel(
 
     var onState: ((ToolWindowState) -> Unit)? = null
 
+    /**
+     * Called when a build appears that was not in the first list shown for its job (§7.2). The
+     * branch scope is implicit: this view model only ever lists the current branch's builds.
+     */
+    var onBuildFinished: ((BuildRef) -> Unit)? = null
+
+    /** The "one balloon per newly appeared build" rule, kept headless and tested. */
+    private val newBuilds = NewBuildWatcher()
+
     /** Set on the executor, read from the EDT through [state]. */
     @Volatile
     private var started = false
@@ -457,5 +466,8 @@ class BuildsViewModel(
     private fun update(next: ToolWindowState) {
         state = next
         onState?.invoke(next)
+        if (next is ToolWindowState.Ready) {
+            newBuilds.observe(next.job.rawPathString, next.builds)?.let { onBuildFinished?.invoke(it) }
+        }
     }
 }

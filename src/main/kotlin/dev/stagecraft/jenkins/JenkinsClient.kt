@@ -11,9 +11,13 @@ import kotlinx.serialization.json.JsonPrimitive
 import java.io.InputStreamReader
 import java.io.OutputStream
 import java.io.Reader
+import java.net.URLEncoder
 
 /** A job tree and whether it is all of it: false when [JenkinsClient.jobTreeDeep] stopped early. */
 data class JobTree(val jobs: List<JobNode>, val complete: Boolean)
+
+/** Whether the server accepted a rebuild request, and what to tell the user if it did not. */
+data class RebuildResult(val accepted: Boolean, val message: String)
 
 /** Who Jenkins says we are. */
 data class MeInfo(val id: String, val fullName: String?)
@@ -329,6 +333,40 @@ class JenkinsClient(
         if (response.status == 404) return null
         return parseTestReport(parseBody(url, response))
     }
+
+    /**
+     * A form POST returning the raw response text after the standard error mapping. Crumb handling
+     * is [JenkinsHttp]'s: password auth gets the crumb and session cookie, token auth sends none
+     * (§9.2). Used by the Jenkinsfile linter.
+     */
+    fun postForm(path: String, fields: Map<String, String>): String {
+        val url = http.resolve(path)
+        val response = http.post(path, formEncode(fields).toByteArray(Charsets.UTF_8))
+        return requireOk(response, url)
+    }
+
+    /**
+     * Trigger a job's build, with parameters when any are given (§7.4). Feature-gated honestly: a
+     * 403 is reported as "not allowed" rather than thrown, because a server that forbids the trigger
+     * is a normal configuration, not a failure of the load.
+     */
+    fun triggerBuild(rawPath: List<String>, parameters: Map<String, String> = emptyMap()): RebuildResult {
+        val suffix = if (parameters.isEmpty()) "build" else "buildWithParameters"
+        val url = JenkinsUrls.jobUrl(http.baseUrl, rawPath) + suffix
+        val response = http.post(url, formEncode(parameters).toByteArray(Charsets.UTF_8))
+        return when {
+            response.isSuccess -> RebuildResult(true, "Build queued.")
+            response.status == 403 -> RebuildResult(false, "This account is not allowed to trigger this job.")
+            response.status == 404 ->
+                RebuildResult(false, "The job could not be found, or is not visible to this account.")
+            else -> RebuildResult(false, "Jenkins answered HTTP ${response.status}.")
+        }
+    }
+
+    private fun formEncode(fields: Map<String, String>): String =
+        fields.entries.joinToString("&") { (key, value) ->
+            URLEncoder.encode(key, "UTF-8") + "=" + URLEncoder.encode(value, "UTF-8")
+        }
 
     private fun parseTestReport(obj: JsonObject): TestReport {
         val cases = ArrayList<TestCase>()

@@ -18,6 +18,9 @@ import dev.stagecraft.jenkins.JenkinsAuth
 import dev.stagecraft.jenkins.JenkinsClient
 import dev.stagecraft.jenkins.JenkinsCredential
 import dev.stagecraft.jenkins.JenkinsUrls
+import dev.stagecraft.jenkins.LintClient
+import dev.stagecraft.jenkins.LintResult
+import dev.stagecraft.jenkins.RebuildResult
 import dev.stagecraft.jenkins.TailDelta
 import dev.stagecraft.jenkins.UrlConnectionTransport
 import dev.stagecraft.model.BuildRef
@@ -79,6 +82,11 @@ class JenkinsService(private val project: Project) : Disposable {
         DefaultBuildsLoader(credentials, ::clientFor, cacheDir),
         io,
     )
+
+    init {
+        // A build that appears after the window was already showing a list gets one balloon (§7.2).
+        viewModel.onBuildFinished = { NotificationService.getInstance(project).onNewBuild(it) }
+    }
 
     /**
      * Cache-only paint first, full load second - both off the EDT, both arriving through
@@ -235,6 +243,33 @@ class JenkinsService(private val project: Project) : Disposable {
                 val wfapi = client.wfapiDescribe(build.url)
                 StageView.fromWfapi(wfapi ?: kotlinx.serialization.json.JsonObject(emptyMap()))
                     ?: StageView.fromConsole(ConsoleStages.parse(client.consoleText(build.url)))
+            }
+            post(onDone, result)
+        }
+    }
+
+    /**
+     * §7.4: lint a Jenkinsfile with the server's own validator. The caller passes the **editor
+     * buffer**, so an unsaved edit is linted - the incumbent's most-quoted defect.
+     */
+    fun lintJenkinsfile(jenkinsfile: String, onDone: (Result<LintResult>) -> Unit) {
+        io.execute {
+            val result = runCatching {
+                val client = currentClientOrNull()
+                    ?: error("Stagecraft is not configured, so it cannot lint a Jenkinsfile.")
+                LintClient(client).validate(jenkinsfile)
+            }
+            post(onDone, result)
+        }
+    }
+
+    /** §7.4: trigger a rebuild, feature-gated honestly by [JenkinsClient.triggerBuild]. */
+    fun triggerBuild(build: BuildRef, onDone: (Result<RebuildResult>) -> Unit) {
+        io.execute {
+            val result = runCatching {
+                val client = currentClientOrNull()
+                    ?: error("Stagecraft is not configured, so it cannot rebuild.")
+                client.triggerBuild(build.jobRawPath)
             }
             post(onDone, result)
         }

@@ -2,23 +2,27 @@ package dev.stagecraft.ui
 
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.ui.Messages
 import dev.stagecraft.model.BuildRef
 import dev.stagecraft.service.JenkinsService
 import java.awt.BorderLayout
+import java.awt.FlowLayout
+import javax.swing.JButton
 import javax.swing.JPanel
 import javax.swing.JTabbedPane
 
 /**
- * One build, as a tool window tab: **Stages**, **Log**, **Tests** (§7.2).
+ * One build, as a tool window tab: **Stages**, **Log**, **Tests**, with a **Rebuild** action
+ * (§7.2, §7.4).
  *
  * Clicking a stage selects the Log tab and scrolls to that stage's first line where the console
  * parse knows the range; the log is otherwise opened at the first error. Each child owns its own
  * load and tail, and [dispose] tears all three down together, so closing the tab stops every poll.
  */
 class BuildViewPanel(
-    project: Project,
-    service: JenkinsService,
-    build: BuildRef,
+    private val project: Project,
+    private val service: JenkinsService,
+    private val build: BuildRef,
     isShowing: () -> Boolean,
 ) : JPanel(BorderLayout()), Disposable {
 
@@ -29,11 +33,37 @@ class BuildViewPanel(
         log.scrollToLine(line)
     }
     private val tests = TestResultsPanel(project, service, build)
+    private val rebuild = JButton("Rebuild")
 
     init {
+        // §7.4: rebuild where the server allows it. The result is reported honestly - a 403 is
+        // "this account is not allowed", not a silent failure.
+        rebuild.addActionListener {
+            rebuild.isEnabled = false
+            service.triggerBuild(build) { result ->
+                rebuild.isEnabled = true
+                result.fold(
+                    { answer -> Messages.showInfoMessage(project, answer.message, "Stagecraft rebuild") },
+                    { failure ->
+                        Messages.showErrorDialog(
+                            project,
+                            failure.message ?: "Stagecraft could not rebuild this job.",
+                            "Stagecraft rebuild",
+                        )
+                    },
+                )
+            }
+        }
+
+        val header = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
+            isOpaque = false
+            add(rebuild)
+        }
+
         tabs.addTab("Stages", stages)
         tabs.addTab("Log", log)
         tabs.addTab("Tests", tests)
+        add(header, BorderLayout.NORTH)
         add(tabs, BorderLayout.CENTER)
     }
 
