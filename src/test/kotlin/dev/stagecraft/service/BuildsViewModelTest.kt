@@ -11,10 +11,12 @@ import dev.stagecraft.jenkins.JobIndex
 import dev.stagecraft.jenkins.FOLDER_CLASS
 import dev.stagecraft.jenkins.MULTIBRANCH_CLASS
 import dev.stagecraft.jenkins.WORKFLOW_CLASS
+import dev.stagecraft.jenkins.jobFromName
 import dev.stagecraft.jenkins.testJob
 import dev.stagecraft.model.BuildStatus
 import java.io.File
 import java.nio.file.Files
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import kotlin.system.measureTimeMillis
@@ -332,6 +334,133 @@ class BuildsViewModelTest {
 
         assertEquals(ToolWindowState.Unconfigured, state)
         assertEquals(0, fake.count)
+    }
+
+    @Test
+    fun `first paint paints the cached rows, with their age, and costs no network`() {
+        val dir = tempDir()
+        try {
+            seedCache(dir)
+            val fake = transport()
+            fake.routeMe()
+            fake.onGetPrefix(base + "job/svc/job/main/api", Fixtures.json("06.branchbuilds.json"))
+            fake.onGetPrefix(base + "job/svc/job/main/1/api", Fixtures.json("07.remotedata.json"))
+            val (model, _) = loader(fake = fake, cacheDir = dir)
+            assertTrue(model.load(configured(), ctx()) is ToolWindowState.Ready)
+            val afterLoad = fake.count
+
+            val state = model.snapshotForFirstPaint(configured(), ctx())
+
+            assertTrue(state is ToolWindowState.Ready, "was $state")
+            assertTrue(state.fromCache)
+            assertEquals(1, state.builds.size)
+            assertEquals(1, state.builds[0].number)
+            assertTrue(state.ageMillis != null && state.ageMillis < 60_000, "age=${state.ageMillis}")
+            assertEquals(afterLoad, fake.count)
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `an empty build list is cached and painted with its age`() {
+        val dir = tempDir()
+        try {
+            seedCache(dir)
+            val fake = transport()
+            fake.routeMe()
+            fake.onGetPrefix(base + "job/svc/job/main/api", Fixtures.of("""{"builds":[]}"""))
+            val (model, _) = loader(fake = fake, cacheDir = dir)
+            assertTrue(model.load(configured(), ctx()) is ToolWindowState.Empty)
+
+            val state = model.snapshotForFirstPaint(configured(), ctx())
+
+            assertTrue(state is ToolWindowState.Empty, "was $state")
+            assertTrue(state.ageMillis != null, "age=${state.ageMillis}")
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `a cached list for one branch is not painted for another`() {
+        val dir = tempDir()
+        try {
+            JobIndex.save(
+                dir,
+                JobIndex.of(
+                    listOf(testJob(listOf("svc"), WORKFLOW_CLASS)),
+                    serverUrl = base,
+                    fetchedAtMillis = System.currentTimeMillis(),
+                ),
+            )
+            val fake = transport()
+            fake.routeMe()
+            fake.onGetPrefix(base + "job/svc/api", Fixtures.json("06.branchbuilds.json"))
+            fake.onGetPrefix(base + "job/svc/1/api", Fixtures.json("07.remotedata.json"))
+            val (model, _) = loader(fake = fake, cacheDir = dir)
+            assertTrue(model.load(configured(), ctx(branch = "main")) is ToolWindowState.Ready)
+
+            val other = model.snapshotForFirstPaint(configured(), ctx(branch = "feature-x"))
+
+            assertTrue(other is ToolWindowState.Loading, "was $other")
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    // --------------------------------------------------------------- cancel
+
+    @Test
+    fun `cancelling a slow load discards its answer`() {
+        val gate = CountDownLatch(1)
+        val loader = object : BuildsLoader {
+            override fun load(state: StagecraftState, ctx: BranchContext): ToolWindowState {
+                gate.await()
+                return ToolWindowState.Ready(emptyList(), jobFromName("svc", base), "loaded", null, false)
+            }
+
+            override fun snapshotForFirstPaint(state: StagecraftState, ctx: BranchContext): ToolWindowState =
+                ToolWindowState.Loading(null)
+        }
+        val io = Executors.newSingleThreadExecutor()
+        try {
+            val model = BuildsViewModel(loader, io)
+            model.refresh(configured(), ctx())
+
+            model.cancel()
+            assertEquals(ToolWindowState.Cancelled, model.state)
+
+            gate.countDown()
+            io.submit {}.get() // let the discarded load finish
+
+            assertEquals(ToolWindowState.Cancelled, model.state)
+        } finally {
+            io.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `retry after a cancel loads again`() {
+        val io = Executors.newSingleThreadExecutor()
+        try {
+            val loader = object : BuildsLoader {
+                override fun load(state: StagecraftState, ctx: BranchContext): ToolWindowState =
+                    ToolWindowState.Ready(emptyList(), jobFromName("svc", base), "loaded", null, false)
+
+                override fun snapshotForFirstPaint(state: StagecraftState, ctx: BranchContext): ToolWindowState =
+                    ToolWindowState.Loading(null)
+            }
+            val model = BuildsViewModel(loader, io)
+            model.cancel()
+
+            model.refresh(configured(), ctx())
+            io.submit {}.get()
+
+            assertTrue(model.state is ToolWindowState.Ready, "was ${model.state}")
+        } finally {
+            io.shutdownNow()
+        }
     }
 
     // ------------------------------------------------- placeholder vs. the first load

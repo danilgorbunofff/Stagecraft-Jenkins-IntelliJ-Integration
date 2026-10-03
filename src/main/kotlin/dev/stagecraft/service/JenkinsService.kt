@@ -80,17 +80,23 @@ class JenkinsService(private val project: Project) : Disposable {
             val startedAt = System.nanoTime()
             viewModel.showPlaceholder(settings.state.isConfigured)
 
-            val context = gitContext().asBranchContext()
-            val afterGitMillis = millisSince(startedAt)
-
-            viewModel.paintFirst(settings.state, context)
+            // Paint from the last known branch before git runs. The Day 5-6 measurement put git on
+            // the critical path at 1210 ms under IDE-startup load, over the 200 ms budget, and the
+            // matcher cannot run without a branch; the cached context is what lets the first paint
+            // be disk-only (§9.7). It is refined below by the real git answer.
+            val cachedContext = BranchContextCache.load(cacheDir) ?: BranchContext(null, null, null)
+            viewModel.paintFirst(settings.state, cachedContext)
             val afterPaintMillis = millisSince(startedAt)
+
+            val context = gitContext().asBranchContext()
+            BranchContextCache.save(cacheDir, context)
+            val afterGitMillis = millisSince(startedAt)
 
             // The cached match is the half of the first paint Stagecraft owns; the EDT being busy
             // with the rest of the IDE is not. Logging both keeps the two apart (§9.7).
             LOG.info(
-                "First paint computed in $afterPaintMillis ms " +
-                    "(git ${afterGitMillis}ms, cached match ${afterPaintMillis - afterGitMillis}ms)",
+                "First paint computed in $afterPaintMillis ms (from the cached branch context); " +
+                    "git answered at ${afterGitMillis}ms",
             )
 
             viewModel.refresh(settings.state, context)
@@ -145,6 +151,14 @@ class JenkinsService(private val project: Project) : Disposable {
     /** Re-reads git and Jenkins. Safe to call from the EDT: the work happens on [io]. */
     fun refresh() {
         io.execute { reload() }
+    }
+
+    /**
+     * §15.5: stop a load the user is no longer willing to wait for. Safe to call from the EDT - it
+     * only publishes a state and bumps the generation the in-flight load checks before it reports.
+     */
+    fun cancel() {
+        viewModel.cancel()
     }
 
     /** Reads the project settings and git, so it only ever runs on [io]. */

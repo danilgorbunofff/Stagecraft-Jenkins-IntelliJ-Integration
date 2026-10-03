@@ -12,6 +12,7 @@ import dev.stagecraft.model.BuildRef
 import dev.stagecraft.model.JobNode
 import java.io.File
 import java.util.concurrent.Executor
+import java.util.concurrent.atomic.AtomicInteger
 
 /** What the git side of a project looks like when a load starts. */
 data class BranchContext(
@@ -39,13 +40,27 @@ sealed interface ToolWindowState {
         val how: String,
         val versionWarning: String?,
         val fromCache: Boolean,
+        /** Age of the cached rows when [fromCache], so the UI can show how stale they are (§15.4 #3). */
+        val ageMillis: Long? = null,
     ) : ToolWindowState
 
     /** The job matched and exists, but has no builds yet. */
-    data class Empty(val job: JobNode, val how: String) : ToolWindowState
+    data class Empty(
+        val job: JobNode,
+        val how: String,
+        /** Age of the cached "no builds" answer, or null when it came from a live load. */
+        val ageMillis: Long? = null,
+    ) : ToolWindowState
 
     /** Something went wrong. [retryable] says whether a Retry button can help. */
     data class Failed(val reason: String, val retryable: Boolean) : ToolWindowState
+
+    /**
+     * The user stopped a load that was taking too long (§15.5: no loading state may outlive 200 ms
+     * without a cancel button). The request already on the wire is not aborted — a blocking read
+     * cannot be — but its answer is discarded and the spinner is replaced by a state that says so.
+     */
+    object Cancelled : ToolWindowState
 }
 
 /** The headless behaviour the tool window renders. */
@@ -124,7 +139,7 @@ class DefaultBuildsLoader(
             val match = matchWithFreshIndex(state, client, ctx)
             when (match) {
                 is RemoteMatcher.MatchResult.Unresolved -> ToolWindowState.Failed(match.reason, retryable = true)
-                is RemoteMatcher.MatchResult.Matched -> readyState(client, match, ctx.remoteUrl)
+                is RemoteMatcher.MatchResult.Matched -> readyState(client, match, state, ctx)
             }
         } catch (e: JenkinsException) {
             verifiedClient = null
@@ -148,9 +163,37 @@ class DefaultBuildsLoader(
 
         // Never touch the network here: paint fast, refine in the background.
         return when (val match = RemoteMatcher(index).match(ctx.remoteUrl, ctx.branch, ctx.prNumber)) {
-            is RemoteMatcher.MatchResult.Matched ->
-                ToolWindowState.Loading("checking builds of \"${match.job.displayName}\"")
+            is RemoteMatcher.MatchResult.Matched -> cachedBuilds(cacheDir, state, match, ctx)
             is RemoteMatcher.MatchResult.Unresolved -> ToolWindowState.Loading(null)
+        }
+    }
+
+    /**
+     * §15.4 #3: paint the branch's last known rows from the disk cache, with their age, and let the
+     * background refresh replace them. Falls back to the honest "checking" state when no list has
+     * been cached yet - a cold cache must still show something instantly (§9.7).
+     */
+    private fun cachedBuilds(
+        cacheDir: File,
+        state: StagecraftState,
+        match: RemoteMatcher.MatchResult.Matched,
+        ctx: BranchContext,
+    ): ToolWindowState {
+        val key = BuildListCache.key(state.serverUrl, match.job.rawPath, ctx.branch, ctx.prNumber)
+        val entry = BuildListCache.load(cacheDir, state.serverUrl, key)
+            ?: return ToolWindowState.Loading("checking builds of \"${match.job.displayName}\"")
+        val age = BuildListCache.ageMillis(entry, clock())
+        return if (entry.builds.isEmpty()) {
+            ToolWindowState.Empty(entry.job, entry.how, ageMillis = age)
+        } else {
+            ToolWindowState.Ready(
+                entry.builds,
+                entry.job,
+                entry.how,
+                entry.versionWarning,
+                fromCache = true,
+                ageMillis = age,
+            )
         }
     }
 
@@ -222,13 +265,53 @@ class DefaultBuildsLoader(
     private fun readyState(
         client: JenkinsClient,
         match: RemoteMatcher.MatchResult.Matched,
-        remoteUrl: String,
+        state: StagecraftState,
+        ctx: BranchContext,
     ): ToolWindowState {
         val job = match.job
         val builds = client.builds(job.rawPath)
-        if (builds.isEmpty()) return ToolWindowState.Empty(job, match.how)
-        val how = if (match.pinned) match.how else match.how + confirmation(client, job, builds.first(), remoteUrl)
-        return ToolWindowState.Ready(builds, job, how, client.versionWarning, fromCache = false)
+        val how = if (builds.isEmpty() || match.pinned) {
+            match.how
+        } else {
+            match.how + confirmation(client, job, builds.first(), ctx.remoteUrl.orEmpty())
+        }
+        cacheBuilds(state, job, builds, how, client.versionWarning, ctx)
+        return if (builds.isEmpty()) {
+            ToolWindowState.Empty(job, how)
+        } else {
+            ToolWindowState.Ready(builds, job, how, client.versionWarning, fromCache = false)
+        }
+    }
+
+    /**
+     * §15.4 #3: remember the branch's rows so the next IDE start can paint them before the network.
+     * A cache write is best effort - a read-only disk must never cost the user the build list.
+     */
+    private fun cacheBuilds(
+        state: StagecraftState,
+        job: JobNode,
+        builds: List<BuildRef>,
+        how: String,
+        versionWarning: String?,
+        ctx: BranchContext,
+    ) {
+        val dir = cacheDir ?: return
+        val key = BuildListCache.key(state.serverUrl, job.rawPath, ctx.branch, ctx.prNumber)
+        val entry = CachedBuildList(
+            serverUrl = state.serverUrl.trimEnd('/'),
+            key = key,
+            job = job,
+            builds = builds,
+            how = how,
+            versionWarning = versionWarning,
+            fetchedAtMillis = clock(),
+        )
+        try {
+            BuildListCache.save(dir, entry)
+        } catch (_: Exception) {
+            // A cache that cannot be written is not a failure worth reporting: the load succeeded,
+            // and the next start simply paints a spinner instead of rows.
+        }
     }
 
     /**
@@ -302,6 +385,14 @@ class BuildsViewModel(
     private var started = false
 
     /**
+     * Bumped by every [refresh] and by [cancel]. A load that finishes with a stale value is thrown
+     * away, so a cancelled request cannot overwrite the state that replaced it. An [AtomicInteger]
+     * rather than a plain field because [cancel] runs on the EDT while [refresh] may run on the I/O
+     * thread.
+     */
+    private val generation = AtomicInteger(0)
+
+    /**
      * Publish what the project's in-memory settings already say, before the I/O that cannot be
      * instant - git and the cache read.
      *
@@ -336,6 +427,7 @@ class BuildsViewModel(
      */
     fun refresh(config: StagecraftState, ctx: BranchContext) {
         started = true
+        val token = generation.incrementAndGet()
         // An unconfigured project must not flash a spinner for a load it cannot do: the load has
         // nothing to wait for, so its Unconfigured answer should simply appear.
         val showing = state
@@ -344,8 +436,22 @@ class BuildsViewModel(
             update(ToolWindowState.Loading(null))
         }
         executor.execute {
-            update(loader.load(config, ctx))
+            val result = loader.load(config, ctx)
+            // A cancelled or superseded load must not publish: the state on screen is newer than
+            // its answer, however long the socket took to give up (§15.5).
+            if (generation.get() == token) update(result)
         }
+    }
+
+    /**
+     * Stop a load that is taking too long (§15.5). The in-flight request is not aborted - a
+     * blocking read cannot be - but its answer is discarded and the spinner is replaced by a state
+     * that says the wait was stopped, with a Retry the user can press when ready. Callers stop
+     * polling too, so the cancelled state is not immediately replaced by a fresh load.
+     */
+    fun cancel() {
+        generation.incrementAndGet()
+        update(ToolWindowState.Cancelled)
     }
 
     private fun update(next: ToolWindowState) {

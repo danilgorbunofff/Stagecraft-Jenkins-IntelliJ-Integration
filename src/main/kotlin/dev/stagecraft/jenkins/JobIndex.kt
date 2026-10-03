@@ -4,8 +4,6 @@ import dev.stagecraft.model.JobKind
 import dev.stagecraft.model.JobNode
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.put
@@ -221,10 +219,10 @@ class JobIndex private constructor(
             if (root.int("formatVersion") != 1) return null
             val storedServer = root.str("serverUrl") ?: return null
             if (!storedServer.equals(serverUrl.trimEnd('/'), ignoreCase = true)) return null
-            val jobs = root.arr("jobs")?.mapNotNull { (it as? JsonObject)?.let(::jobFromJson) } ?: return null
+            val jobs = root.arr("jobs")?.mapNotNull { (it as? JsonObject)?.let(::jobNodeFromJson) } ?: return null
             val pins = LinkedHashMap<String, JobNode>()
             for ((key, value) in root.obj("pins") ?: JsonObject(emptyMap())) {
-                val job = (value as? JsonObject)?.let(::jobFromJson) ?: return null
+                val job = (value as? JsonObject)?.let(::jobNodeFromJson) ?: return null
                 pins[key.lowercase()] = job
             }
             return JobIndex(
@@ -237,28 +235,6 @@ class JobIndex private constructor(
             )
         }
 
-        private fun jobFromJson(o: JsonObject): JobNode? {
-            val name = o.str("name") ?: return null
-            val fullName = o.str("fullName") ?: return null
-            val rawPath = o.arr("rawPath")
-                ?.mapNotNull { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content }
-                ?: return null
-            if (rawPath.isEmpty()) return null
-            val kind = o.str("kind")?.let { parsed -> runCatching { JobKind.valueOf(parsed) }.getOrNull() }
-                ?: JobKind.OTHER
-            return JobNode(
-                name = name,
-                displayName = o.str("displayName") ?: name,
-                fullName = fullName,
-                rawPath = rawPath,
-                className = o.str("className"),
-                kind = kind,
-                url = o.str("url") ?: "",
-                depth = o.int("depth") ?: rawPath.size,
-                colour = o.str("colour"),
-            )
-        }
-
         private fun JobIndex.toJson(): JsonObject = buildJsonObject {
             put("formatVersion", 1)
             put("serverUrl", serverUrl.trimEnd('/'))
@@ -266,23 +242,11 @@ class JobIndex private constructor(
             put("totalSeen", totalSeen)
             put("truncated", truncated)
             put("pins", buildJsonObject {
-                for ((key, job) in pins) put(key, jobJson(job))
+                for ((key, job) in pins) put(key, jobNodeToJson(job))
             })
             put("jobs", buildJsonArray {
-                for (job in jobs) add(jobJson(job))
+                for (job in jobs) add(jobNodeToJson(job))
             })
-        }
-
-        private fun jobJson(job: JobNode): JsonObject = buildJsonObject {
-            put("name", job.name)
-            put("displayName", job.displayName)
-            put("fullName", job.fullName)
-            put("rawPath", JsonArray(job.rawPath.map { JsonPrimitive(it) }))
-            put("className", job.className)
-            put("kind", job.kind.name)
-            put("url", job.url)
-            put("depth", job.depth)
-            put("colour", job.colour)
         }
 
         private fun sha1Hex(value: String): String =

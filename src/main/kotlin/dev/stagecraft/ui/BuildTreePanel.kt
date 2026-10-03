@@ -83,6 +83,9 @@ class BuildTreePanel(
     private val retryButton = JButton("Retry")
     private val configureButton = JButton("Configure...")
 
+    /** §15.5: no loading state may last more than 200 ms without a cancel button. */
+    private val cancelButton = JButton("Cancel")
+
     private val cards = CardLayout()
     private val body = JPanel(cards)
 
@@ -111,8 +114,9 @@ class BuildTreePanel(
             }
         })
 
-        refreshButton.addActionListener { service.refresh() }
-        retryButton.addActionListener { service.refresh() }
+        refreshButton.addActionListener { resumePolling(); service.refresh() }
+        retryButton.addActionListener { resumePolling(); service.refresh() }
+        cancelButton.addActionListener { cancelLoad() }
         settingsButton.addActionListener { openSettings() }
         configureButton.addActionListener { openSettings() }
 
@@ -145,6 +149,7 @@ class BuildTreePanel(
                 JPanel(FlowLayout(FlowLayout.LEFT, 0, JBUI.scale(8))).apply {
                     isOpaque = false
                     add(retryButton)
+                    add(cancelButton)
                     add(configureButton)
                 },
                 BorderLayout.CENTER,
@@ -172,9 +177,7 @@ class BuildTreePanel(
 
         // Quiet refresh, but only while somebody is looking: polling a server nobody is watching
         // is exactly the traffic §7.3 rule 1 exists to prevent.
-        poller = service.poller.start {
-            ApplicationManager.getApplication().invokeLater({ if (!disposed && isShowing()) service.refresh() }, project.disposed)
-        }
+        startPolling()
     }
 
     override fun dispose() {
@@ -184,6 +187,34 @@ class BuildTreePanel(
         if (viewModel.onState === stateHandler) viewModel.onState = null
     }
 
+    /**
+     * Quiet refresh while the tool window is open. Started once in [init] and restarted by Retry or
+     * Refresh after a cancel, so a stopped poller stays stopped until the user asks for it again
+     * (§15.5: a cancel that silently resumes is not a cancel).
+     */
+    private fun startPolling() {
+        if (poller != null) return
+        poller = service.poller.start {
+            ApplicationManager.getApplication().invokeLater({ if (!disposed && isShowing()) service.refresh() }, project.disposed)
+        }
+    }
+
+    /** A user action (Retry/Refresh) means the user wants the cadence back. */
+    private fun resumePolling() {
+        startPolling()
+    }
+
+    /**
+     * §15.5: stop waiting without freezing the IDE. The poller is cancelled first so the next tick
+     * cannot start a fresh load the user did not ask for, then the view model discards whatever the
+     * blocked request eventually answers.
+     */
+    private fun cancelLoad() {
+        poller?.cancel()
+        poller = null
+        service.cancel()
+    }
+
     private fun render(state: ToolWindowState) {
         reportProgress(state)
 
@@ -191,7 +222,13 @@ class BuildTreePanel(
             is ToolWindowState.Ready -> {
                 replaceBuilds(state.builds)
                 val count = if (state.builds.size == 1) "1 build" else "${state.builds.size} builds"
-                val cache = if (state.fromCache) " - from cache" else ""
+                // §15.4 #3: cached rows carry their age, so the user knows how stale the first paint is.
+                val cache = if (state.fromCache) {
+                    val age = state.ageMillis?.let { ", updated ${formatAge(it)}" }.orEmpty()
+                    " - from cache$age"
+                } else {
+                    ""
+                }
                 title.text = "<html><b>${escape(state.job.displayName)}</b> - $count$cache</html>"
                 note.text = "${state.how}. Double-click a build to open it in Jenkins."
                 warning.text = state.versionWarning.orEmpty()
@@ -204,13 +241,14 @@ class BuildTreePanel(
                 title.text = ""
                 message.foreground = UIUtil.getInactiveTextColor()
                 message.text = state.hint?.let { "Checking $it..." } ?: "Checking this branch's builds..."
-                showMessageCard(refresh = false, retry = false, configure = false)
+                showMessageCard(refresh = false, retry = false, configure = false, cancel = true)
             }
 
             is ToolWindowState.Empty -> {
                 title.text = "<html><b>${escape(state.job.displayName)}</b></html>"
                 message.foreground = UIUtil.getInactiveTextColor()
-                message.text = "${state.job.displayName} has no builds yet. ${state.how}."
+                val checked = state.ageMillis?.let { " (checked ${formatAge(it)})" }.orEmpty()
+                message.text = "${state.job.displayName} has no builds yet$checked. ${state.how}."
                 showMessageCard(refresh = true, retry = false, configure = false)
             }
 
@@ -228,6 +266,14 @@ class BuildTreePanel(
                 message.foreground = UIUtil.getErrorForeground()
                 message.text = state.reason
                 showMessageCard(refresh = false, retry = state.retryable, configure = !state.retryable)
+            }
+
+            ToolWindowState.Cancelled -> {
+                title.text = ""
+                message.foreground = labelForeground
+                message.text = "Stopped waiting for the server. Nothing is loading; press Retry when " +
+                    "you are ready, or check the server address in Settings."
+                showMessageCard(refresh = false, retry = true, configure = true)
             }
         }
     }
@@ -292,19 +338,21 @@ class BuildTreePanel(
         is ToolWindowState.Empty -> "Empty(${state.job.displayName})"
         ToolWindowState.Unconfigured -> "Unconfigured"
         is ToolWindowState.Failed -> "Failed(retryable=${state.retryable}, ${state.reason})"
+        ToolWindowState.Cancelled -> "Cancelled"
     }
 
-    private fun showMessageCard(refresh: Boolean, retry: Boolean, configure: Boolean) {
+    private fun showMessageCard(refresh: Boolean, retry: Boolean, configure: Boolean, cancel: Boolean = false) {
         warning.isVisible = false
         note.text = ""
-        showButtons(refresh, retry, configure)
+        showButtons(refresh, retry, configure, cancel)
         cards.show(body, CARD_MESSAGE)
     }
 
-    private fun showButtons(refresh: Boolean, retry: Boolean, configure: Boolean) {
+    private fun showButtons(refresh: Boolean, retry: Boolean, configure: Boolean, cancel: Boolean = false) {
         refreshButton.isVisible = refresh
         retryButton.isVisible = retry
         configureButton.isVisible = configure
+        cancelButton.isVisible = cancel
     }
 
     private fun openSelectedBuild() {
@@ -391,6 +439,14 @@ class BuildTreePanel(
                 seconds < 3600 -> "${seconds / 60}m ${seconds % 60}s"
                 else -> "${seconds / 3600}h ${(seconds % 3600) / 60}m"
             }
+        }
+
+        /** §15.4 #3: how stale the cached rows are, in the shortest honest form. */
+        fun formatAge(millis: Long): String = when {
+            millis < 60_000 -> "just now"
+            millis < 3_600_000 -> "${millis / 60_000}m ago"
+            millis < 86_400_000 -> "${millis / 3_600_000}h ago"
+            else -> "${millis / 86_400_000}d ago"
         }
 
         /** Job names may contain `&` and `<`, and this text is rendered as HTML. */
