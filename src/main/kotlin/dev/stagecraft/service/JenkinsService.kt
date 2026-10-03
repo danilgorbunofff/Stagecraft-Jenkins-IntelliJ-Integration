@@ -9,16 +9,25 @@ import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
 import com.intellij.util.net.HttpConfigurable
 import com.intellij.util.net.ssl.CertificateManager
+import dev.stagecraft.jenkins.ConsoleLog
+import dev.stagecraft.jenkins.ConsoleLogReader
+import dev.stagecraft.jenkins.ConsoleTailer
 import dev.stagecraft.jenkins.JenkinsAuth
 import dev.stagecraft.jenkins.JenkinsClient
 import dev.stagecraft.jenkins.JenkinsCredential
+import dev.stagecraft.jenkins.JenkinsUrls
+import dev.stagecraft.jenkins.TailDelta
 import dev.stagecraft.jenkins.UrlConnectionTransport
+import dev.stagecraft.model.BuildRef
 import java.io.File
 import java.net.ProxySelector
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import javax.net.ssl.SSLContext
+
+/** A console read: the bounded log, the cursor to continue from, and whether the build is running. */
+data class ConsoleRead(val log: ConsoleLog, val cursor: Long, val moreData: Boolean)
 
 /**
  * The per-project Stagecraft service (§7.3 rule 3: never one global server).
@@ -161,6 +170,68 @@ class JenkinsService(private val project: Project) : Disposable {
         viewModel.cancel()
     }
 
+    /**
+     * §9.7: read a build's console once, bounded, off the EDT, and hand the result back on it.
+     *
+     * The read streams `progressiveText` from zero rather than `/consoleText`: it is the same bytes
+     * once the reader has stripped the console notes and normalised CRLF, and it also returns the
+     * cursor, so a running build can then be followed with deltas instead of re-fetched. The reader
+     * keeps only the head and a rolling tail, so a 180 MB log never lands in the heap.
+     */
+    fun readConsole(build: BuildRef, onDone: (Result<ConsoleRead>) -> Unit) {
+        io.execute {
+            val result = runCatching {
+                val client = currentClientOrNull()
+                    ?: error("Stagecraft is not configured, so it cannot read a log.")
+                var cursor = 0L
+                var more = false
+                val log = client.withProgressiveText(build.url) { reader, handle ->
+                    cursor = handle.nextOffset
+                    more = handle.moreData
+                    ConsoleLogReader().read(reader)
+                }
+                if (more) consoleTailers[build.url] = ConsoleTailer(client, build.url, cursor)
+                ConsoleRead(log, cursor, more)
+            }
+            post(onDone, result)
+        }
+    }
+
+    /**
+     * One live-tail poll (§9.5). Safe from the EDT; the request and the delta arrive through
+     * [onDelta] on the EDT. The tailer is created by [readConsole] so its cursor continues from the
+     * first read rather than re-sending the whole log.
+     */
+    fun tailConsole(build: BuildRef, onDelta: (Result<TailDelta>) -> Unit) {
+        io.execute {
+            val result = runCatching {
+                val client = currentClientOrNull()
+                    ?: error("Stagecraft is not configured, so it cannot follow a log.")
+                val tailer = consoleTailers.getOrPut(build.url) { ConsoleTailer(client, build.url) }
+                tailer.poll()
+            }
+            post(onDelta, result)
+        }
+    }
+
+    /** The log tab is closing: drop the cursor so a reopened tab starts clean. */
+    fun stopTailing(build: BuildRef) {
+        io.execute { consoleTailers.remove(build.url) }
+    }
+
+    private fun <T> post(onDone: (Result<T>) -> Unit, result: Result<T>) {
+        // `any()` so the callback is not deferred until a modal dialog closes (see [readToken]).
+        ApplicationManager.getApplication().invokeLater({ onDone(result) }, ModalityState.any())
+    }
+
+    /** The current settings' client, on [io]; null when the project is not configured or has no token. */
+    private fun currentClientOrNull(): JenkinsClient? {
+        val state = settings.state
+        if (!state.isConfigured) return null
+        val token = credentials.token(state.serverUrl, state.user) ?: return null
+        return clientFor(JenkinsUrls.normalizeBase(state.serverUrl), state.user, token)
+    }
+
     /** Reads the project settings and git, so it only ever runs on [io]. */
     private fun reload() {
         viewModel.refresh(settings.state, gitContext().asBranchContext())
@@ -187,6 +258,9 @@ class JenkinsService(private val project: Project) : Disposable {
     /** Only touched on [io], which runs one task at a time. */
     private var client: Pair<ClientKey, JenkinsClient>? = null
 
+    /** Live-tail cursors per build, touched on [io] only. Cleared whenever the client is rebuilt. */
+    private val consoleTailers = HashMap<String, ConsoleTailer>()
+
     /**
      * A client wired to the IDE's own proxy and trust settings (§9.2), reused for as long as the
      * settings it was built from stand. Reuse is the point: one client is one cookie jar and one crumb
@@ -211,6 +285,9 @@ class JenkinsService(private val project: Project) : Disposable {
                 sslContext = sslContext(state),
             ),
         )
+        // A rebuilt client has a new cookie jar and crumb cache, so any cursor held against the old
+        // one is meaningless; drop it rather than continue a session that no longer exists.
+        consoleTailers.clear()
         client = key to fresh
         return fresh
     }

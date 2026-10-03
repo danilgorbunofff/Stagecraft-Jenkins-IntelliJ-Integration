@@ -1,6 +1,5 @@
 package dev.stagecraft.ui
 
-import com.intellij.ide.BrowserUtil
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.logger
@@ -48,6 +47,7 @@ class BuildTreePanel(
     private val project: Project,
     private val service: JenkinsService,
     private val isShowing: () -> Boolean = { true },
+    private val openLog: (BuildRef) -> Unit = {},
 ) : JPanel(BorderLayout()), Disposable {
 
     private val viewModel: BuildsViewModel = service.viewModel
@@ -80,6 +80,7 @@ class BuildTreePanel(
 
     private val refreshButton = JButton("Refresh")
     private val settingsButton = JButton("Settings...")
+    private val openLogButton = JButton("Open log")
     private val retryButton = JButton("Retry")
     private val configureButton = JButton("Configure...")
 
@@ -110,18 +111,24 @@ class BuildTreePanel(
         list.emptyText.setText("No builds on this branch yet.")
         list.addMouseListener(object : MouseAdapter() {
             override fun mouseClicked(event: MouseEvent) {
-                if (event.clickCount == 2) openSelectedBuild()
+                if (event.clickCount == 2) openSelectedLog()
             }
         })
+        // "Open log" only means something with a build under it; a disabled button says that better
+        // than a click that silently does nothing.
+        openLogButton.isEnabled = false
+        list.addListSelectionListener { openLogButton.isEnabled = list.selectedValue != null }
 
         refreshButton.addActionListener { resumePolling(); service.refresh() }
         retryButton.addActionListener { resumePolling(); service.refresh() }
         cancelButton.addActionListener { cancelLoad() }
+        openLogButton.addActionListener { openSelectedLog() }
         settingsButton.addActionListener { openSettings() }
         configureButton.addActionListener { openSettings() }
 
         val actions = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(4), 0)).apply {
             isOpaque = false
+            add(openLogButton)
             add(refreshButton)
             add(settingsButton)
         }
@@ -230,7 +237,7 @@ class BuildTreePanel(
                     ""
                 }
                 title.text = "<html><b>${escape(state.job.displayName)}</b> - $count$cache</html>"
-                note.text = "${state.how}. Double-click a build to open it in Jenkins."
+                note.text = "${state.how}. Double-click a build to open its log."
                 warning.text = state.versionWarning.orEmpty()
                 warning.isVisible = state.versionWarning != null
                 showButtons(refresh = true, retry = false, configure = false)
@@ -355,9 +362,9 @@ class BuildTreePanel(
         cancelButton.isVisible = cancel
     }
 
-    private fun openSelectedBuild() {
+    private fun openSelectedLog() {
         val build = list.selectedValue ?: return
-        BrowserUtil.browse(build.url)
+        openLog(build)
     }
 
     private fun openSettings() {

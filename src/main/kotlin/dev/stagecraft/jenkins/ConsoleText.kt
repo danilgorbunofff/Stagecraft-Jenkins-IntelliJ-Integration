@@ -81,3 +81,13 @@ data class ConsoleChunk(
 ) {
     val isEmpty: Boolean get() = text.isEmpty()
 }
+
+/**
+ * The cursor and running flag from a `progressiveText` response, read before its (streamed) body.
+ * The body is handed over separately as a [java.io.Reader] so the caller can scan it bounded.
+ */
+data class ConsoleCursor(
+    val nextOffset: Long,
+    val moreData: Boolean,
+    val resetDetected: Boolean,
+)

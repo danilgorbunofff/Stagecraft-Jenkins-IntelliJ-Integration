@@ -4,6 +4,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.ui.content.ContentFactory
+import dev.stagecraft.model.BuildRef
 import dev.stagecraft.service.JenkinsService
 
 /**
@@ -20,7 +21,9 @@ class BuildsToolWindowFactory : ToolWindowFactory {
 
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
         val service = JenkinsService.getInstance(project)
-        val panel = BuildTreePanel(project, service) { toolWindow.isVisible }
+        val panel = BuildTreePanel(project, service, { toolWindow.isVisible }) { build ->
+            openLog(project, service, toolWindow, build)
+        }
 
         val content = ContentFactory.getInstance().createContent(panel, "", false)
         content.isCloseable = false
@@ -28,5 +31,19 @@ class BuildsToolWindowFactory : ToolWindowFactory {
         toolWindow.contentManager.addContent(content)
 
         service.activate()
+    }
+
+    /**
+     * Open a build's log as its own tool window tab. The tab owns a [LogEditorPanel], which owns the
+     * editor and the tail poller; closing the tab disposes all three, so a log that is no longer on
+     * screen stops polling (§9.5: "stop immediately if the tool window closes").
+     */
+    private fun openLog(project: Project, service: JenkinsService, toolWindow: ToolWindow, build: BuildRef) {
+        val logPanel = LogEditorPanel(project, service, build) { toolWindow.isVisible }
+        val content = ContentFactory.getInstance()
+            .createContent(logPanel, "Log ${build.displayName}", true)
+        content.setDisposer(logPanel)
+        toolWindow.contentManager.addContent(content)
+        toolWindow.contentManager.setSelectedContent(content)
     }
 }

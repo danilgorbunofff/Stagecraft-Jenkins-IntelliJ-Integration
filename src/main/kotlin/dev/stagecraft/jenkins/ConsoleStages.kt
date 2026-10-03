@@ -41,6 +41,13 @@ object ConsoleStages {
             "|^Build step '.+' marked build as failure$",
     )
 
+    /**
+     * The one error predicate, shared by the parser and the log panel so both agree on what "the
+     * first error" is. The log view scrolls to the line this returns true for, and the parser
+     * infers the failed stage from the same line - two predicates would drift.
+     */
+    fun isErrorLine(line: String): Boolean = ERROR_LINE.containsMatchIn(line)
+
     private const val MARKER = "[Pipeline] "
     private const val BRANCH_PREFIX = "Branch: "
     private const val SYNTHETIC_PREFIX = "Declarative: "
@@ -111,7 +118,7 @@ object ConsoleStages {
             val line = ANSI.replace(raw, "").removeSuffix("\r")
 
             if (line.startsWith(MARKER)) isPipeline = true
-            if (firstError == null && ERROR_LINE.containsMatchIn(line)) firstError = i
+            if (firstError == null && isErrorLine(line)) firstError = i
 
             val namedOpen = NAMED_OPEN.matchEntire(line)
             if (namedOpen != null) {

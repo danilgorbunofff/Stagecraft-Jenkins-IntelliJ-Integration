@@ -4,7 +4,9 @@ import dev.stagecraft.model.BuildRef
 import dev.stagecraft.model.BuildStatus
 import dev.stagecraft.model.JobKind
 import dev.stagecraft.model.JobNode
+import java.io.InputStreamReader
 import java.io.OutputStream
+import java.io.Reader
 
 /** A job tree and whether it is all of it: false when [JenkinsClient.jobTreeDeep] stopped early. */
 data class JobTree(val jobs: List<JobNode>, val complete: Boolean)
@@ -184,6 +186,52 @@ class JenkinsClient(
             val buffered = response.toBuffered(maxBytes)
             requireOk(buffered, url)
             return ConsoleText.normaliseLineEndings(buffered.text)
+        }
+    }
+
+    /**
+     * Stream `/consoleText` as characters into [block] without buffering it.
+     *
+     * This is the entry point for the log panel's memory-bounded reader (§9.7): the body is decoded
+     * as UTF-8 and handed over as a [Reader] so [ConsoleLogReader] can scan it once, keeping only
+     * the head and a rolling tail. A non-2xx is turned into the same typed failure as [consoleText].
+     */
+    fun <T> withConsoleText(buildUrl: String, block: (Reader) -> T): T {
+        val url = buildScopedUrl(buildUrl, "consoleText")
+        http.stream(url).use { response ->
+            if (!response.isSuccess) requireOk(response.toBuffered(ERROR_BODY_LIMIT), url)
+            return InputStreamReader(response.stream, Charsets.UTF_8).use(block)
+        }
+    }
+
+    /**
+     * Stream `logText/progressiveText?start=[start]` as characters, handing over the opaque cursor
+     * and the running flag before the body is read.
+     *
+     * This is what the log panel uses for its first read **and** for every delta (§9.5): the first
+     * read is the same bytes `/consoleText` returns (the reader strips the console notes and
+     * normalises CRLF), and it also yields the cursor that makes the next poll a delta rather than a
+     * re-fetch. The body is never buffered, so a running build's large console is still bounded.
+     */
+    fun <T> withProgressiveText(
+        buildUrl: String,
+        start: Long = 0L,
+        block: (Reader, ConsoleCursor) -> T,
+    ): T {
+        val url = buildScopedUrl(buildUrl, "logText/progressiveText?start=$start")
+        http.stream(url).use { response ->
+            if (!response.isSuccess) requireOk(response.toBuffered(ERROR_BODY_LIMIT), url)
+            val cursor = response.header("X-Text-Size")?.trim()?.toLongOrNull()
+                ?: throw JenkinsException.Malformed(
+                    url,
+                    "the response carried no usable X-Text-Size header, so the console cursor cannot be advanced",
+                )
+            val handle = ConsoleCursor(
+                nextOffset = cursor,
+                moreData = response.header("X-More-Data")?.trim().equals("true", ignoreCase = true),
+                resetDetected = start > 0 && cursor < start,
+            )
+            return InputStreamReader(response.stream, Charsets.UTF_8).use { block(it, handle) }
         }
     }
 

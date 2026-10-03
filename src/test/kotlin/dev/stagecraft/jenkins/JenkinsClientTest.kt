@@ -494,6 +494,19 @@ class JenkinsClientTest {
         assertFailsWith<JenkinsException.NotFound> { client(fake).consoleText(mainBuildUrl) }
     }
 
+    @Test
+    fun `the console streams into a bounded reader with its first error`() {
+        val fake = FakeTransport()
+        fake.onGet(mainBuildUrl + "consoleText", Fixtures.json("08.console-main.txt"))
+
+        val log = client(fake).withConsoleText(mainBuildUrl) { ConsoleLogReader().read(it) }
+
+        assertEquals(Fixtures.text("08.console-main.txt"), log.text)
+        assertFalse(log.truncated)
+        // The parser's oracle says the main build's first error is line 72; both share the predicate.
+        assertEquals(72, log.firstErrorLine)
+    }
+
     // ---------------------------------------------------------------- version
 
     @Test
