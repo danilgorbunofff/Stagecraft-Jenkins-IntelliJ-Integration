@@ -39,7 +39,7 @@ whole design is built so their absence degrades rather than breaks.
 The charter asks whether the 2.204.x row is worth its cost (a Java 8 image plus plugin versions
 contemporary with 2019) or whether the floor moves up. **Decision: keep the Jenkins floor at
 2.204.1 LTS and warn-and-proceed (§9.8), but treat the 2.204.x *row* as the lowest priority.** The
-plugin's IDE floor is now 2024.2 (`since-build 242`, §9.1), so the audience for a 2019 Jenkins server
+plugin's IDE floor is now 2024.3 (`since-build 243`, §9.1), so the audience for a 2019 Jenkins server
 reached from a 2024+ IDE is small; the code paths it would exercise (crumb behaviour, `/me`) are
 already covered by the 2.479.x and newest rows. Revisit if a customer asks.
 

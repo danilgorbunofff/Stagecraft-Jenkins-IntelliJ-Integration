@@ -61,4 +61,16 @@ class LintClientTest {
         assertEquals("POST", fake.requests.single().method)
         assertEquals(validateUrl, fake.requests.single().url)
     }
+
+    @Test
+    fun `a web page instead of a lint answer is reported, not shown as markup`() {
+        val fake = FakeTransport()
+        fake.onPost(validateUrl, Fixtures.of("<!DOCTYPE html><html><head><title>Sign in [Jenkins]</title></head></html>"))
+
+        val result = LintClient(client(fake)).validate("pipeline {}")
+
+        kotlin.test.assertFalse(result.valid)
+        kotlin.test.assertTrue(result.headline.contains("web page"), result.headline)
+        kotlin.test.assertTrue(result.message.contains("Sign in [Jenkins]"), result.message)
+    }
 }

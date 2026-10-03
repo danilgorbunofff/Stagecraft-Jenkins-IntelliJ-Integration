@@ -61,6 +61,12 @@ sealed interface ToolWindowState {
      * cannot be — but its answer is discarded and the spinner is replaced by a state that says so.
      */
     object Cancelled : ToolWindowState
+
+    /**
+     * The paid licence is missing or no longer valid (§8.3). The window says so and offers the
+     * IDE's own registration dialog instead of quietly working past the trial.
+     */
+    object Unlicensed : ToolWindowState
 }
 
 /** The headless behaviour the tool window renders. */
@@ -228,7 +234,9 @@ class DefaultBuildsLoader(
 
     private fun fetchIndex(client: JenkinsClient, previous: JobIndex?): JobIndex {
         val fresh = JobIndex.fetch(client, nowMillis = clock(), previous = previous)
-        cacheDir?.let { JobIndex.save(it, fresh) }
+        // Best effort, like every cache write: a full or read-only disk costs the next start its
+        // warm cache, never this load its answer.
+        cacheDir?.let { dir -> runCatching { JobIndex.save(dir, fresh) } }
         return fresh
     }
 
@@ -381,7 +389,7 @@ class BuildsViewModel(
     var onState: ((ToolWindowState) -> Unit)? = null
 
     /**
-     * Called when a build appears that was not in the first list shown for its job (§7.2). The
+     * Called once for every build that finished after the first live list for its job (§7.2). The
      * branch scope is implicit: this view model only ever lists the current branch's builds.
      */
     var onBuildFinished: ((BuildRef) -> Unit)? = null
@@ -448,7 +456,7 @@ class BuildsViewModel(
             val result = loader.load(config, ctx)
             // A cancelled or superseded load must not publish: the state on screen is newer than
             // its answer, however long the socket took to give up (§15.5).
-            if (generation.get() == token) update(result)
+            update(result, token)
         }
     }
 
@@ -463,11 +471,33 @@ class BuildsViewModel(
         update(ToolWindowState.Cancelled)
     }
 
-    private fun update(next: ToolWindowState) {
-        state = next
-        onState?.invoke(next)
-        if (next is ToolWindowState.Ready) {
-            newBuilds.observe(next.job.rawPathString, next.builds)?.let { onBuildFinished?.invoke(it) }
+    /** True while the list on screen holds a build that is still running - worth a poll even unseen. */
+    val hasRunningBuild: Boolean
+        get() = (state as? ToolWindowState.Ready)?.builds?.any { it.isRunning } == true
+
+    /** The licence check failed: say so instead of loading (§8.3). */
+    fun showUnlicensed() {
+        generation.incrementAndGet()
+        update(ToolWindowState.Unlicensed)
+    }
+
+    /**
+     * Publish [next]. Synchronized because a load answers on the I/O thread while [cancel] runs on
+     * the EDT; without it a cancelled load's answer could still land between the generation check
+     * and the publish.
+     */
+    private fun update(next: ToolWindowState, token: Int? = null) {
+        val announce = synchronized(this) {
+            if (token != null && generation.get() != token) return
+            state = next
+            onState?.invoke(next)
+            // Only a live list is evidence that a build finished; cached rows are the past.
+            if (next is ToolWindowState.Ready && !next.fromCache) {
+                newBuilds.observe(next.job.rawPathString, next.builds)
+            } else {
+                emptyList()
+            }
         }
+        announce.forEach { build -> onBuildFinished?.invoke(build) }
     }
 }

@@ -24,6 +24,15 @@ object LogFilter {
 
     fun isWarning(line: String): Boolean = WARNING.containsMatchIn(line)
 
+    /** Whether [line] is shown in [mode]; shared by [apply] and the live log view ([LogView]). */
+    fun keeps(line: String, mode: LogFilterMode, ownPackageTokens: List<String> = emptyList()): Boolean = when (mode) {
+        LogFilterMode.ALL -> true
+        LogFilterMode.ERRORS -> ConsoleStages.isErrorLine(line)
+        LogFilterMode.WARNINGS -> isWarning(line)
+        LogFilterMode.OWN_PACKAGE ->
+            ownPackageTokens.isEmpty() || ownPackageTokens.any { line.contains(it, ignoreCase = true) }
+    }
+
     fun apply(
         text: String,
         mode: LogFilterMode,
@@ -34,14 +43,7 @@ object LogFilter {
         var wroteAny = false
         var lastBlank = false
         for (line in text.lineSequence()) {
-            val kept = when (mode) {
-                LogFilterMode.ALL -> true
-                LogFilterMode.ERRORS -> ConsoleStages.isErrorLine(line)
-                LogFilterMode.WARNINGS -> isWarning(line)
-                LogFilterMode.OWN_PACKAGE ->
-                    ownPackageTokens.isEmpty() || ownPackageTokens.any { line.contains(it, ignoreCase = true) }
-            }
-            if (!kept) continue
+            if (!keeps(line, mode, ownPackageTokens)) continue
 
             val normalised = if (collapseBlankLines) line.trimEnd() else line
             val blank = normalised.isEmpty()

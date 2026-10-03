@@ -99,8 +99,17 @@ object ConsoleStages {
 
     // ---------------------------------------------------------------- parser
 
-    fun parse(text: String): StageParse {
-        val lines = splitLines(text)
+    fun parse(text: String): StageParse = parse(splitLines(text).asSequence())
+
+    /**
+     * Parse a console streamed line by line. The parser keeps only its frame stack and the stages,
+     * so a log of any size parses in bounded memory - the stage view must not fail on a large log
+     * just because the log panel can hold only its head and tail.
+     */
+    fun parse(reader: java.io.Reader): StageParse =
+        java.io.BufferedReader(reader).use { parse(it.lineSequence()) }
+
+    fun parse(lines: Sequence<String>): StageParse {
         val stages = mutableListOf<MutableStage>()
         val stack = ArrayDeque<Frame>()
         val regions = ArrayDeque<Region>()
@@ -113,8 +122,10 @@ object ConsoleStages {
         var strayStageClose = 0
         var lastPopped: String? = null
 
+        var lineCount = 0
         for ((index, raw) in lines.withIndex()) {
             val i = index + 1
+            lineCount = i
             val line = ANSI.replace(raw, "").removeSuffix("\r")
 
             if (line.startsWith(MARKER)) isPipeline = true
@@ -207,7 +218,7 @@ object ConsoleStages {
             if (finished != null) result = finished.groupValues[1]
         }
 
-        val totalLines = lines.size
+        val totalLines = lineCount
         for (stage in stages) {
             if (stage.last == null) {
                 stage.last = totalLines

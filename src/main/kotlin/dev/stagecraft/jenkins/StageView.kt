@@ -30,7 +30,9 @@ data class StageView(
             if (stages.isEmpty()) return null
             return StageView(
                 stages = stages,
-                failedStage = stages.firstOrNull { it.status.equals("FAILED", ignoreCase = true) }?.name,
+                // Stage view lists parallel lanes flat after their parent, and a failed lane fails the
+                // parent too: the last failed entry is the innermost one, which is where to look.
+                failedStage = stages.lastOrNull { it.status.equals("FAILED", ignoreCase = true) }?.name,
                 failedStageInferred = false,
                 source = StageSource.WFAPI,
                 note = null,

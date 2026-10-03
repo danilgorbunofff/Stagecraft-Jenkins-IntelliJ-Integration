@@ -44,20 +44,31 @@ class SuffixSourceResolver(private val projectPaths: List<String>) : SourceResol
         return SourceLocation(best, frame.line, frame.column)
     }
 
-    /** The length of the common suffix, or null when it does not start on a segment boundary. */
+    /**
+     * The length of the common suffix cut back to whole path segments, or null when not even the
+     * file name matches.
+     *
+     * `/Users/me/svc/src/Foo.java` and the agent's `/var/jenkins/ws/svc/src/Foo.java` share
+     * `/svc/src/Foo.java`; the walk stops at the first differing character (`e` vs `s`), and what
+     * counts is the last `/` it passed - or a path that ran out entirely. Checking the boundary at
+     * the mismatch itself, as this once did, can never succeed (the two characters differ, so they
+     * cannot both be `/`) and accepted only whole-path matches: no agent path ever got a link.
+     */
     private fun matchLength(projectPath: String, hint: String): Int? {
         val a = projectPath.replace('\\', '/')
         var i = a.length - 1
         var j = hint.length - 1
         var length = 0
+        var lastBoundary = -1
         while (i >= 0 && j >= 0 && a[i] == hint[j]) {
             length++
+            if (a[i] == '/') lastBoundary = length
             i--
             j--
         }
-        if (length == 0) return null
-        val boundaryA = i < 0 || a[i] == '/'
-        val boundaryB = j < 0 || hint[j] == '/'
-        return if (boundaryA && boundaryB) length else null
+        // One side ran out: the match ends on a boundary by definition.
+        if (i < 0 || j < 0) return length.takeIf { it > 0 }
+        // Otherwise only the part up to (and including) the last separator matched whole segments.
+        return lastBoundary.takeIf { it > 0 }
     }
 }

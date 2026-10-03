@@ -63,4 +63,16 @@ class StageViewTest {
         assertEquals(StageSource.BUILD, view.source)
         assertTrue(view.stages.single().isPseudo)
     }
+
+    // ---------------------------------------------------------------- audit regressions
+
+    @Test
+    fun `the innermost failed stage is pre-selected, not a failed parallel parent`() {
+        val describe = parseJsonObject(
+            """{"stages":[{"name":"Build","status":"SUCCESS"},{"name":"Parallel","status":"FAILED"},""" +
+                """{"name":"Lane A","status":"SUCCESS"},{"name":"Lane B","status":"FAILED"}]}""",
+        )
+
+        assertEquals("Lane B", StageView.fromWfapi(describe)?.failedStage)
+    }
 }

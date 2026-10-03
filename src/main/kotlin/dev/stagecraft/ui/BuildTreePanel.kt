@@ -15,7 +15,7 @@ import dev.stagecraft.model.BuildRef
 import dev.stagecraft.model.BuildStatus
 import dev.stagecraft.service.BuildsViewModel
 import dev.stagecraft.service.JenkinsService
-import dev.stagecraft.service.PollerHandle
+import dev.stagecraft.service.LicenseCheck
 import dev.stagecraft.service.ToolWindowState
 import dev.stagecraft.ui.settings.StagecraftConfigurable
 import java.awt.BorderLayout
@@ -87,10 +87,12 @@ class BuildTreePanel(
     /** §15.5: no loading state may last more than 200 ms without a cancel button. */
     private val cancelButton = JButton("Cancel")
 
+    /** §8.3: the IDE's own registration dialog, shown when the licence has ended. */
+    private val registerButton = JButton("Register...")
+
     private val cards = CardLayout()
     private val body = JPanel(cards)
 
-    private var poller: PollerHandle? = null
 
     /**
      * Held in a field and compared by identity on [dispose], so a panel that is being thrown away
@@ -119,9 +121,11 @@ class BuildTreePanel(
         openLogButton.isEnabled = false
         list.addListSelectionListener { openLogButton.isEnabled = list.selectedValue != null }
 
-        refreshButton.addActionListener { resumePolling(); service.refresh() }
-        retryButton.addActionListener { resumePolling(); service.refresh() }
-        cancelButton.addActionListener { cancelLoad() }
+        // Refresh/Retry are a user asking for loads again: the service resumes its cadence on them.
+        refreshButton.addActionListener { service.refresh() }
+        retryButton.addActionListener { service.refresh() }
+        cancelButton.addActionListener { service.cancel() }
+        registerButton.addActionListener { LicenseCheck.requestLicense("Stagecraft needs a licence to keep loading builds.") }
         openLogButton.addActionListener { openSelectedLog() }
         settingsButton.addActionListener { openSettings() }
         configureButton.addActionListener { openSettings() }
@@ -157,6 +161,7 @@ class BuildTreePanel(
                     isOpaque = false
                     add(retryButton)
                     add(cancelButton)
+                    add(registerButton)
                     add(configureButton)
                 },
                 BorderLayout.CENTER,
@@ -182,44 +187,14 @@ class BuildTreePanel(
             LOG.info("The Stagecraft tool window painted in $firstPaintMs ms showing ${describe(painted)}")
         }
 
-        // Quiet refresh, but only while somebody is looking: polling a server nobody is watching
-        // is exactly the traffic §7.3 rule 1 exists to prevent.
-        startPolling()
+        // The service owns the cadence (it runs for notifications even with this window closed);
+        // opening the window only makes sure it is running.
+        service.startPolling()
     }
 
     override fun dispose() {
         disposed = true
-        poller?.cancel()
-        poller = null
         if (viewModel.onState === stateHandler) viewModel.onState = null
-    }
-
-    /**
-     * Quiet refresh while the tool window is open. Started once in [init] and restarted by Retry or
-     * Refresh after a cancel, so a stopped poller stays stopped until the user asks for it again
-     * (§15.5: a cancel that silently resumes is not a cancel).
-     */
-    private fun startPolling() {
-        if (poller != null) return
-        poller = service.poller.start {
-            ApplicationManager.getApplication().invokeLater({ if (!disposed && isShowing()) service.refresh() }, project.disposed)
-        }
-    }
-
-    /** A user action (Retry/Refresh) means the user wants the cadence back. */
-    private fun resumePolling() {
-        startPolling()
-    }
-
-    /**
-     * §15.5: stop waiting without freezing the IDE. The poller is cancelled first so the next tick
-     * cannot start a fresh load the user did not ask for, then the view model discards whatever the
-     * blocked request eventually answers.
-     */
-    private fun cancelLoad() {
-        poller?.cancel()
-        poller = null
-        service.cancel()
     }
 
     private fun render(state: ToolWindowState) {
@@ -281,6 +256,13 @@ class BuildTreePanel(
                 message.text = "Stopped waiting for the server. Nothing is loading; press Retry when " +
                     "you are ready, or check the server address in Settings."
                 showMessageCard(refresh = false, retry = true, configure = true)
+            }
+
+            ToolWindowState.Unlicensed -> {
+                title.text = "<html><b>Stagecraft</b></html>"
+                message.foreground = labelForeground
+                message.text = JenkinsService.UNLICENSED_MESSAGE
+                showMessageCard(refresh = false, retry = true, configure = false, register = true)
             }
         }
     }
@@ -346,12 +328,20 @@ class BuildTreePanel(
         ToolWindowState.Unconfigured -> "Unconfigured"
         is ToolWindowState.Failed -> "Failed(retryable=${state.retryable}, ${state.reason})"
         ToolWindowState.Cancelled -> "Cancelled"
+        ToolWindowState.Unlicensed -> "Unlicensed"
     }
 
-    private fun showMessageCard(refresh: Boolean, retry: Boolean, configure: Boolean, cancel: Boolean = false) {
+    private fun showMessageCard(
+        refresh: Boolean,
+        retry: Boolean,
+        configure: Boolean,
+        cancel: Boolean = false,
+        register: Boolean = false,
+    ) {
         warning.isVisible = false
         note.text = ""
         showButtons(refresh, retry, configure, cancel)
+        registerButton.isVisible = register
         cards.show(body, CARD_MESSAGE)
     }
 
@@ -360,6 +350,7 @@ class BuildTreePanel(
         retryButton.isVisible = retry
         configureButton.isVisible = configure
         cancelButton.isVisible = cancel
+        registerButton.isVisible = false
     }
 
     private fun openSelectedLog() {

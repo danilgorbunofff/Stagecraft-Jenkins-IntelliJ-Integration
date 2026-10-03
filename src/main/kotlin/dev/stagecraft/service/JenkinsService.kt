@@ -7,6 +7,7 @@ import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.util.net.HttpConfigurable
 import com.intellij.util.net.ssl.CertificateManager
 import dev.stagecraft.jenkins.ConsoleLog
@@ -17,6 +18,7 @@ import dev.stagecraft.jenkins.StageView
 import dev.stagecraft.jenkins.JenkinsAuth
 import dev.stagecraft.jenkins.JenkinsClient
 import dev.stagecraft.jenkins.JenkinsCredential
+import dev.stagecraft.jenkins.JenkinsException
 import dev.stagecraft.jenkins.JenkinsUrls
 import dev.stagecraft.jenkins.LintClient
 import dev.stagecraft.jenkins.LintResult
@@ -32,8 +34,11 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import javax.net.ssl.SSLContext
 
-/** A console read: the bounded log, the cursor to continue from, and whether the build is running. */
-data class ConsoleRead(val log: ConsoleLog, val cursor: Long, val moreData: Boolean)
+/**
+ * A console read: the bounded log, the cursor to continue from, whether the build is running, and -
+ * when it is - the handle [JenkinsService.tailConsole] follows it with.
+ */
+data class ConsoleRead(val log: ConsoleLog, val cursor: Long, val moreData: Boolean, val tailId: Long? = null)
 
 /**
  * The per-project Stagecraft service (§7.3 rule 3: never one global server).
@@ -65,8 +70,28 @@ class JenkinsService(private val project: Project) : Disposable {
      */
     private val cacheDir: File = File(PathManager.getSystemPath(), "$CACHE_DIR_NAME/${cacheDirKey(project)}")
 
+    /** The thread [io] runs on, so a Cancel can abort exactly the request it is blocked in. */
+    @Volatile
+    private var ioThread: Thread? = null
+
+    /**
+     * The build list, the settings and the password safe: one thread, so a token write is always
+     * followed - never overtaken - by the reload that uses it.
+     */
     private val io: ExecutorService = Executors.newSingleThreadExecutor { task ->
-        Thread(task, "Stagecraft I/O").apply { isDaemon = true }
+        Thread(task, "Stagecraft I/O").apply {
+            isDaemon = true
+            ioThread = this
+        }
+    }
+
+    /**
+     * Everything a build tab does - reading a 50 MB log, a tail tick, stages, tests, lint, rebuild -
+     * on its own small pool. On [io] a large log read stalled the build list, its poll and every
+     * other tab behind it.
+     */
+    private val work: ExecutorService = Executors.newFixedThreadPool(WORKERS) { task ->
+        Thread(task, "Stagecraft worker").apply { isDaemon = true }
     }
 
     private val scheduler: ScheduledExecutorService =
@@ -74,8 +99,22 @@ class JenkinsService(private val project: Project) : Disposable {
             Thread(task, "Stagecraft poll").apply { isDaemon = true }
         }
 
-    /** Quiet refresh while a tool window is showing; live console output reuses it on Day 7. */
+    /** The 15 s cadence; [startPolling] decides on each tick whether a load is worth its request. */
     val poller: BuildPoller = BuildPoller(scheduler)
+
+    private var pollHandle: PollerHandle? = null
+
+    /** Set by a user's Cancel: the cadence stays stopped until they ask for a load again (§15.5). */
+    @Volatile
+    private var pollingPaused = false
+
+    private var pollTicks = 0L
+
+    private val activated = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** The licence verdict and when it was taken; re-checked every [LICENSE_RECHECK_MILLIS]. */
+    @Volatile
+    private var licence: Pair<Boolean?, Long>? = null
 
     /** One state per project, so two views of one project cannot disagree about it. */
     val viewModel: BuildsViewModel = BuildsViewModel(
@@ -96,31 +135,96 @@ class JenkinsService(private val project: Project) : Disposable {
      * panel's "no Jenkins server yet" placeholder while subprocesses and the disk are busy.
      */
     fun activate() {
+        // The project-open activity and the tool window both call this; only the first does work.
+        if (!activated.compareAndSet(false, true)) return
         io.execute {
-            val startedAt = System.nanoTime()
-            viewModel.showPlaceholder(settings.state.isConfigured)
-
-            // Paint from the last known branch before git runs. The Day 5-6 measurement put git on
-            // the critical path at 1210 ms under IDE-startup load, over the 200 ms budget, and the
-            // matcher cannot run without a branch; the cached context is what lets the first paint
-            // be disk-only (§9.7). It is refined below by the real git answer.
-            val cachedContext = BranchContextCache.load(cacheDir) ?: BranchContext(null, null, null)
-            viewModel.paintFirst(settings.state, cachedContext)
-            val afterPaintMillis = millisSince(startedAt)
-
-            val context = gitContext().asBranchContext()
-            BranchContextCache.save(cacheDir, context)
-            val afterGitMillis = millisSince(startedAt)
-
-            // The cached match is the half of the first paint Stagecraft owns; the EDT being busy
-            // with the rest of the IDE is not. Logging both keeps the two apart (§9.7).
-            LOG.info(
-                "First paint computed in $afterPaintMillis ms (from the cached branch context); " +
-                    "git answered at ${afterGitMillis}ms",
-            )
-
-            viewModel.refresh(settings.state, context)
+            try {
+                firstLoad()
+            } catch (failure: Exception) {
+                // Nothing here may leave the window on "Loading" for good: log it and load anyway.
+                LOG.warn("Stagecraft's first paint failed; loading without it", failure)
+                reload()
+            }
         }
+    }
+
+    private fun firstLoad() {
+        val startedAt = System.nanoTime()
+        viewModel.showPlaceholder(settings.state.isConfigured)
+        if (licensed() == false) {
+            viewModel.showUnlicensed()
+            return
+        }
+
+        // Paint from the last known branch before git runs. The Day 5-6 measurement put git on
+        // the critical path at 1210 ms under IDE-startup load, over the 200 ms budget, and the
+        // matcher cannot run without a branch; the cached context is what lets the first paint
+        // be disk-only (§9.7). It is refined below by the real git answer.
+        val cachedContext = BranchContextCache.load(cacheDir) ?: BranchContext(null, null, null)
+        viewModel.paintFirst(settings.state, cachedContext)
+        val afterPaintMillis = millisSince(startedAt)
+
+        val context = gitContext().asBranchContext()
+        // Best effort: a cache that cannot be written costs the next start its warm paint, not
+        // this one its load.
+        runCatching { BranchContextCache.save(cacheDir, context) }
+            .onFailure { LOG.info("Stagecraft could not cache the branch context: ${it.message}") }
+        val afterGitMillis = millisSince(startedAt)
+
+        // The cached match is the half of the first paint Stagecraft owns; the EDT being busy
+        // with the rest of the IDE is not. Logging both keeps the two apart (§9.7).
+        LOG.info(
+            "First paint computed in $afterPaintMillis ms (from the cached branch context); " +
+                "git answered at ${afterGitMillis}ms",
+        )
+
+        viewModel.refresh(settings.state, context)
+    }
+
+    /**
+     * §7.2 balloons need loads to happen, and the panel is not always open. Every 15 s tick decides:
+     * a visible window or a build still running on this branch is worth a load each tick; otherwise
+     * one load a minute, a single bounded request, is enough to notice a build that was pushed and
+     * finished while nobody was looking. Paused by Cancel until the user asks again.
+     */
+    fun startPolling() {
+        synchronized(this) {
+            pollingPaused = false
+            if (pollHandle != null) return
+            pollHandle = poller.start(::pollTick)
+        }
+    }
+
+    /** §15.5: a Cancel stops the cadence too, or the next tick would undo it. */
+    fun pausePolling() {
+        pollingPaused = true
+    }
+
+    private fun pollTick() {
+        if (pollingPaused || !settings.state.isConfigured) return
+        val tick = pollTicks++
+        ApplicationManager.getApplication().invokeLater({
+            if (pollingPaused) return@invokeLater
+            val visible = ToolWindowManager.getInstance(project).getToolWindow(TOOL_WINDOW_ID)?.isVisible == true
+            if (visible || viewModel.hasRunningBuild || tick % HIDDEN_POLL_EVERY_TICKS == 0L) refresh()
+        }, project.disposed)
+    }
+
+    /**
+     * The licence verdict, re-checked every few minutes. Null while the IDE's licensing facade is
+     * still starting, which is treated as "allowed" rather than locking the user out (§8.3).
+     */
+    private fun licensed(): Boolean? {
+        val now = System.currentTimeMillis()
+        licence?.let { (verdict, at) -> if (now - at < LICENSE_RECHECK_MILLIS && verdict != null) return verdict }
+        val verdict = try {
+            LicenseCheck.isLicensed()
+        } catch (failure: Exception) {
+            LOG.warn("Stagecraft could not read its licence", failure)
+            null
+        }
+        licence = verdict to now
+        return verdict
     }
 
     private fun millisSince(startedAt: Long): Long = (System.nanoTime() - startedAt) / 1_000_000
@@ -166,10 +270,12 @@ class JenkinsService(private val project: Project) : Disposable {
             }
             reload()
         }
+        if (settings.state.isConfigured) startPolling()
     }
 
     /** Re-reads git and Jenkins. Safe to call from the EDT: the work happens on [io]. */
     fun refresh() {
+        pollingPaused = false
         io.execute { reload() }
     }
 
@@ -178,7 +284,12 @@ class JenkinsService(private val project: Project) : Disposable {
      * only publishes a state and bumps the generation the in-flight load checks before it reports.
      */
     fun cancel() {
+        pausePolling()
         viewModel.cancel()
+        // Close the socket the build-list load is blocked on, so Retry does not queue behind it for
+        // up to the 20 s read timeout. Only [io]'s request: a log read on [work] is left alone.
+        val thread = ioThread ?: return
+        synchronized(this) { client?.second }?.http?.abortRequestsOn(thread)
     }
 
     /**
@@ -190,7 +301,7 @@ class JenkinsService(private val project: Project) : Disposable {
      * keeps only the head and a rolling tail, so a 180 MB log never lands in the heap.
      */
     fun readConsole(build: BuildRef, onDone: (Result<ConsoleRead>) -> Unit) {
-        io.execute {
+        work.execute {
             val result = runCatching {
                 val client = currentClientOrNull()
                     ?: error("Stagecraft is not configured, so it cannot read a log.")
@@ -201,33 +312,48 @@ class JenkinsService(private val project: Project) : Disposable {
                     more = handle.moreData
                     ConsoleLogReader().read(reader)
                 }
-                if (more) consoleTailers[build.url] = ConsoleTailer(client, build.url, cursor)
-                ConsoleRead(log, cursor, more)
+                val tailId = if (more) {
+                    val id = nextTailId.incrementAndGet()
+                    synchronized(tails) { tails[id] = Tail(build.url, ConsoleTailer(client, build.url, cursor)) }
+                    id
+                } else {
+                    null
+                }
+                ConsoleRead(log, cursor, more, tailId)
             }
             post(onDone, result)
         }
     }
 
     /**
-     * One live-tail poll (§9.5). Safe from the EDT; the request and the delta arrive through
-     * [onDelta] on the EDT. The tailer is created by [readConsole] so its cursor continues from the
-     * first read rather than re-sending the whole log.
+     * One live-tail poll (§9.5) for the tab holding [tailId]. Each tab owns its cursor, so two tabs on
+     * one build, or one tab closing, cannot steal or reset another's. A tick that finds the previous
+     * one still on the wire is skipped rather than queued, so a slow server never builds a backlog.
+     * Returns false when the tick was skipped or the tail is gone.
      */
-    fun tailConsole(build: BuildRef, onDelta: (Result<TailDelta>) -> Unit) {
-        io.execute {
-            val result = runCatching {
-                val client = currentClientOrNull()
-                    ?: error("Stagecraft is not configured, so it cannot follow a log.")
-                val tailer = consoleTailers.getOrPut(build.url) { ConsoleTailer(client, build.url) }
-                tailer.poll()
+    fun tailConsole(tailId: Long, onDelta: (Result<TailDelta>) -> Unit): Boolean {
+        val tail = synchronized(tails) { tails[tailId] } ?: return false
+        if (!tail.busy.compareAndSet(false, true)) return false
+        work.execute {
+            val result = try {
+                runCatching {
+                    // The client may have been rebuilt (a settings change): continue the same cursor
+                    // on the new one rather than restart the log from zero.
+                    val client = currentClientOrNull()
+                        ?: error("Stagecraft is not configured, so it cannot follow a log.")
+                    tail.tailerFor(client).poll()
+                }
+            } finally {
+                tail.busy.set(false)
             }
             post(onDelta, result)
         }
+        return true
     }
 
-    /** The log tab is closing: drop the cursor so a reopened tab starts clean. */
-    fun stopTailing(build: BuildRef) {
-        io.execute { consoleTailers.remove(build.url) }
+    /** The log tab is closing: drop its cursor. */
+    fun stopTailing(tailId: Long) {
+        synchronized(tails) { tails.remove(tailId) }
     }
 
     /**
@@ -236,13 +362,21 @@ class JenkinsService(private val project: Project) : Disposable {
      * not an error.
      */
     fun readStages(build: BuildRef, onDone: (Result<StageView>) -> Unit) {
-        io.execute {
+        work.execute {
             val result = runCatching {
                 val client = currentClientOrNull()
                     ?: error("Stagecraft is not configured, so it cannot read stages.")
-                val wfapi = client.wfapiDescribe(build.url)
-                StageView.fromWfapi(wfapi ?: kotlinx.serialization.json.JsonObject(emptyMap()))
-                    ?: StageView.fromConsole(ConsoleStages.parse(client.consoleText(build.url)))
+                // Any stage-view failure - a 404 (plugin absent), a 500, a 403 on that one endpoint -
+                // falls back to the console parse rather than costing the user the stage list.
+                val wfapi = try {
+                    client.wfapiDescribe(build.url)
+                } catch (failure: JenkinsException) {
+                    LOG.info("Stagecraft stage view unavailable for ${build.url}: ${failure.message}")
+                    null
+                }
+                wfapi?.let { StageView.fromWfapi(it) }
+                    // Streamed line by line: the parse keeps only its stack, so a log of any size works.
+                    ?: StageView.fromConsole(client.withConsoleText(build.url) { reader -> ConsoleStages.parse(reader) })
             }
             post(onDone, result)
         }
@@ -253,7 +387,7 @@ class JenkinsService(private val project: Project) : Disposable {
      * buffer**, so an unsaved edit is linted - the incumbent's most-quoted defect.
      */
     fun lintJenkinsfile(jenkinsfile: String, onDone: (Result<LintResult>) -> Unit) {
-        io.execute {
+        work.execute {
             val result = runCatching {
                 val client = currentClientOrNull()
                     ?: error("Stagecraft is not configured, so it cannot lint a Jenkinsfile.")
@@ -263,13 +397,29 @@ class JenkinsService(private val project: Project) : Disposable {
         }
     }
 
-    /** §7.4: trigger a rebuild, feature-gated honestly by [JenkinsClient.triggerBuild]. */
+    /**
+     * §7.4 "Re-run with parameters": trigger the job again with the parameters [build] ran with, so a
+     * parameterized job is re-run as it was rather than refused. Feature-gated honestly by
+     * [JenkinsClient.triggerBuild].
+     */
     fun triggerBuild(build: BuildRef, onDone: (Result<RebuildResult>) -> Unit) {
-        io.execute {
+        work.execute {
             val result = runCatching {
                 val client = currentClientOrNull()
                     ?: error("Stagecraft is not configured, so it cannot rebuild.")
-                client.triggerBuild(build.jobRawPath)
+                val parameters = client.buildParameters(build.url)
+                client.triggerBuild(build.jobRawPath, parameters, parameterized = parameters.isNotEmpty())
+            }
+            post(onDone, result)
+        }
+    }
+
+    /** Whether [build]'s job can be triggered at all (not disabled, buildable), for the Rebuild button. */
+    fun canRebuild(build: BuildRef, onDone: (Result<Boolean>) -> Unit) {
+        work.execute {
+            val result = runCatching {
+                val client = currentClientOrNull() ?: return@runCatching false
+                client.isBuildable(build.jobRawPath)
             }
             post(onDone, result)
         }
@@ -277,7 +427,7 @@ class JenkinsService(private val project: Project) : Disposable {
 
     /** §9.6: the build's test report, or null when it published none. Off the EDT. */
     fun readTests(build: BuildRef, onDone: (Result<TestReport?>) -> Unit) {
-        io.execute {
+        work.execute {
             val result = runCatching {
                 val client = currentClientOrNull()
                     ?: error("Stagecraft is not configured, so it cannot read tests.")
@@ -292,16 +442,24 @@ class JenkinsService(private val project: Project) : Disposable {
         ApplicationManager.getApplication().invokeLater({ onDone(result) }, ModalityState.any())
     }
 
-    /** The current settings' client, on [io]; null when the project is not configured or has no token. */
+    /**
+     * The current settings' client; null when the project is not configured or has no token. Throws
+     * when the licence has ended, so every build-tab feature says so instead of working past it.
+     */
     private fun currentClientOrNull(): JenkinsClient? {
         val state = settings.state
         if (!state.isConfigured) return null
+        if (licensed() == false) error(UNLICENSED_MESSAGE)
         val token = credentials.token(state.serverUrl, state.user) ?: return null
         return clientFor(JenkinsUrls.normalizeBase(state.serverUrl), state.user, token)
     }
 
     /** Reads the project settings and git, so it only ever runs on [io]. */
     private fun reload() {
+        if (licensed() == false) {
+            viewModel.showUnlicensed()
+            return
+        }
         viewModel.refresh(settings.state, gitContext().asBranchContext())
     }
 
@@ -310,6 +468,7 @@ class JenkinsService(private val project: Project) : Disposable {
 
     override fun dispose() {
         io.shutdownNow()
+        work.shutdownNow()
         scheduler.shutdownNow()
     }
 
@@ -323,11 +482,23 @@ class JenkinsService(private val project: Project) : Disposable {
         val trustCertificate: Boolean,
     )
 
-    /** Only touched on [io], which runs one task at a time. */
+    /** Shared by [io] and [work]; every access holds the service's monitor. */
     private var client: Pair<ClientKey, JenkinsClient>? = null
 
-    /** Live-tail cursors per build, touched on [io] only. Cleared whenever the client is rebuilt. */
-    private val consoleTailers = HashMap<String, ConsoleTailer>()
+    /** One live tail per log tab, keyed by the id [readConsole] handed out. */
+    private class Tail(val buildUrl: String, private var tailer: ConsoleTailer) {
+        /** A tick is on the wire; the next one is skipped rather than queued behind it. */
+        val busy = java.util.concurrent.atomic.AtomicBoolean(false)
+
+        @Synchronized
+        fun tailerFor(client: JenkinsClient): ConsoleTailer {
+            if (!tailer.usesClient(client)) tailer = tailer.continueWith(client)
+            return tailer
+        }
+    }
+
+    private val tails = HashMap<Long, Tail>()
+    private val nextTailId = java.util.concurrent.atomic.AtomicLong()
 
     /**
      * A client wired to the IDE's own proxy and trust settings (§9.2), reused for as long as the
@@ -335,6 +506,7 @@ class JenkinsService(private val project: Project) : Disposable {
      * cache per server (§9.2), where a client per load would open a new Jenkins session on every poll
      * with password auth and throw the crumb away each time.
      */
+    @Synchronized
     private fun clientFor(baseUrl: String, user: String, token: String): JenkinsClient {
         val state = settings.state
         val key = ClientKey(baseUrl, user, token, state.secretIsPassword, state.useProxy, state.trustCertificate)
@@ -353,9 +525,7 @@ class JenkinsService(private val project: Project) : Disposable {
                 sslContext = sslContext(state),
             ),
         )
-        // A rebuilt client has a new cookie jar and crumb cache, so any cursor held against the old
-        // one is meaningless; drop it rather than continue a session that no longer exists.
-        consoleTailers.clear()
+        // Open tails keep their cursors: the next tick continues them on this client (Tail.tailerFor).
         client = key to fresh
         return fresh
     }
@@ -407,6 +577,21 @@ class JenkinsService(private val project: Project) : Disposable {
         private val LOG = logger<JenkinsService>()
 
         private const val CACHE_DIR_NAME = "stagecraft"
+
+        /** The tool window id declared in plugin.xml. */
+        const val TOOL_WINDOW_ID = "Stagecraft"
+
+        /** Threads for build-tab work, so a log read never blocks the build list or another tab. */
+        private const val WORKERS = 3
+
+        /** Hidden window, nothing running: one load every 4 ticks (a minute). */
+        private const val HIDDEN_POLL_EVERY_TICKS = 4L
+
+        private const val LICENSE_RECHECK_MILLIS = 10L * 60 * 1000
+
+        const val UNLICENSED_MESSAGE =
+            "Stagecraft's trial has ended and no licence was found. Buy or register a licence under " +
+                "Help > Register (or Help > Manage Licenses)."
 
         /**
          * A single path segment naming one project. [Project.locationHash] is the platform's hash of

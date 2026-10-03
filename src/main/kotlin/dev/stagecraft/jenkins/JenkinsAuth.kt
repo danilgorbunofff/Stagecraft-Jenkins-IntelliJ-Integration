@@ -40,13 +40,14 @@ sealed class JenkinsCredential {
  */
 class CrumbCache {
 
-    private var loaded = false
-    private var disabled = false
-    private var value: String? = null
+    // Read by any thread that posts through the shared client; every write is synchronized.
+    @Volatile private var loaded = false
+    @Volatile private var disabled = false
+    @Volatile private var value: String? = null
 
     // Named to avoid `field`, which inside a custom accessor refers to the accessor's own
     // backing field rather than to this property.
-    private var fieldName: String = DEFAULT_FIELD
+    @Volatile private var fieldName: String = DEFAULT_FIELD
 
     /** True once we know the answer, whichever answer it was. */
     val isLoaded: Boolean get() = loaded
@@ -59,9 +60,14 @@ class CrumbCache {
     val requestField: String get() = fieldName
 
     /** The header to add to a POST, or `null` when no crumb should be sent. */
-    val header: Pair<String, String>? get() = if (disabled || value == null) null else fieldName to value!!
+    val header: Pair<String, String>?
+        @Synchronized get() {
+            val crumb = value
+            return if (disabled || crumb == null) null else fieldName to crumb
+        }
 
     /** Store a `/crumbIssuer/api/json` body. Throws [JenkinsException.Malformed] if it is unusable. */
+    @Synchronized
     fun store(crumbJson: String) {
         val obj = try {
             parseJsonObject(crumbJson)
@@ -79,6 +85,7 @@ class CrumbCache {
     }
 
     /** The server answered 404: CSRF protection is off. Remember it, and never ask again. */
+    @Synchronized
     fun markDisabled() {
         value = null
         disabled = true
@@ -89,6 +96,7 @@ class CrumbCache {
      * Forget the crumb so the next request fetches a fresh one. Used by the single refetch-on-403
      * retry; crumbs expire with the session, so a cached one can go stale mid-session.
      */
+    @Synchronized
     fun invalidate() {
         value = null
         disabled = false
@@ -109,6 +117,7 @@ class JenkinsAuth(val credential: JenkinsCredential) {
     val crumbCache: CrumbCache = CrumbCache()
 
     /** Why the last crumb fetch failed, if it did. Reported in the message of a later 403. */
+    @Volatile
     var lastCrumbError: String? = null
         internal set
 

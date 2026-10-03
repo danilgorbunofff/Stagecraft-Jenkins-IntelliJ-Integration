@@ -32,6 +32,17 @@ class ConsoleTailer(
     var finished: Boolean = false
         private set
 
+    /** True when this tailer talks through [other]. */
+    fun usesClient(other: JenkinsClient): Boolean = client === other
+
+    /**
+     * The same cursor on a new client (the settings changed mid-tail). The cursor is Jenkins' own
+     * offset into the log, valid whichever session asks, so the log continues instead of restarting
+     * from zero and being appended a second time.
+     */
+    fun continueWith(other: JenkinsClient): ConsoleTailer =
+        ConsoleTailer(other, buildUrl, offset).also { it.finished = finished }
+
     fun poll(): TailDelta {
         if (finished) return TailDelta("", moreData = false, resetDetected = false)
         val chunk = client.progressiveText(buildUrl, offset)

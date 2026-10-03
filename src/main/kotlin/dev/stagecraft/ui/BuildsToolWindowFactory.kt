@@ -30,6 +30,7 @@ class BuildsToolWindowFactory : ToolWindowFactory {
         content.setDisposer(panel)
         toolWindow.contentManager.addContent(content)
 
+        // Usually already done at project open (StagecraftStartup); a no-op then.
         service.activate()
     }
 

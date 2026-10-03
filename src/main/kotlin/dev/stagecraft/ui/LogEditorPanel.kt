@@ -4,6 +4,7 @@ import com.intellij.ide.BrowserUtil
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.command.WriteCommandAction
+import com.intellij.openapi.command.undo.UndoUtil
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.ScrollType
@@ -12,20 +13,21 @@ import com.intellij.openapi.editor.event.EditorMouseListener
 import com.intellij.openapi.editor.markup.EffectType
 import com.intellij.openapi.editor.markup.HighlighterLayer
 import com.intellij.openapi.editor.markup.HighlighterTargetArea
+import com.intellij.openapi.editor.markup.LineMarkerRenderer
 import com.intellij.openapi.editor.markup.TextAttributes
 import com.intellij.openapi.fileTypes.PlainTextFileType
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.util.TextRange
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBLabel
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
-import dev.stagecraft.jenkins.ConsoleLog
-import dev.stagecraft.jenkins.ConsoleStages
-import dev.stagecraft.jenkins.LogFilter
+import dev.stagecraft.jenkins.LineKind
+import dev.stagecraft.jenkins.LogChange
 import dev.stagecraft.jenkins.LogFilterMode
+import dev.stagecraft.jenkins.LogView
 import dev.stagecraft.jenkins.StackFrame
 import dev.stagecraft.jenkins.StackFrames
+import dev.stagecraft.jenkins.Stripe
 import dev.stagecraft.jenkins.TailDelta
 import dev.stagecraft.model.BuildRef
 import dev.stagecraft.service.ConsoleRead
@@ -44,17 +46,18 @@ import javax.swing.JComboBox
 import javax.swing.JPanel
 
 /**
- * The log view (§7.2, §9.5, §9.7): a real read-only [Editor] over a memory-bounded [ConsoleLog].
+ * The log view (§7.2, §9.5, §9.7): a real read-only [Editor] over a memory-bounded [LogView].
  *
  * The editor is the platform's own, not a hand-rolled text widget, so search, selection, folding and
- * accessibility come for free. Error and warning lines get a gutter stripe via a `RangeHighlighter`,
+ * accessibility come for free. Error and warning lines get a gutter bar, a mark on the error stripe
+ * and a tinted background,
  * the view opens scrolled to the **first error** rather than the end, and a running build's log
  * grows through `progressiveText` deltas.
  *
- * Everything the panel needs was decided headlessly: the reader caps memory, the filter is pure
- * Kotlin, and the tailer is a tested protocol. This class only paints the result and never blocks
- * the EDT - every read and poll runs on `JenkinsService`'s I/O thread and arrives back through
- * `invokeLater`.
+ * Everything the panel needs was decided headlessly: the reader caps memory, [LogView] keeps it
+ * capped while tailing and maps full-log line numbers through truncation and the filter, and the
+ * tailer is a tested protocol. This class only paints the result and never blocks the EDT - every
+ * read and poll runs on `JenkinsService`'s worker pool and arrives back through `invokeLater`.
  */
 class LogEditorPanel(
     private val project: Project,
@@ -63,7 +66,10 @@ class LogEditorPanel(
     private val isShowing: () -> Boolean = { true },
 ) : JPanel(BorderLayout()), Disposable {
 
-    private val document = EditorFactory.getInstance().createDocument("")
+    private val document = EditorFactory.getInstance().createDocument("").also {
+        // A read-only log needs no undo; recording it would keep old copies of a 22 M-char text alive.
+        UndoUtil.disableUndoFor(it)
+    }
     private val editor: Editor =
         EditorFactory.getInstance().createEditor(document, project, PlainTextFileType.INSTANCE, true)
 
@@ -73,9 +79,12 @@ class LogEditorPanel(
     private val collapse = JCheckBox("collapse blanks")
     private val openInJenkins = JButton("Open in Jenkins")
 
-    /** The whole retained log, so a filter change does not need to re-fetch it. */
-    private var fullText: String = ""
-    private var log: ConsoleLog? = null
+    /** The retained log and its filter; null until the first read lands. */
+    private var view: LogView? = null
+    private var tailId: Long? = null
+
+    /** EDT-only. Every callback that arrives after the tab closed is dropped on this flag. */
+    private var disposed = false
 
     private val scheduler: ScheduledExecutorService =
         Executors.newSingleThreadScheduledExecutor { runnable ->
@@ -83,11 +92,11 @@ class LogEditorPanel(
         }
     private var tailFuture: ScheduledFuture<*>? = null
 
-    /** Only the first few thousand stripes: an editor with a highlighter per line is unusable. */
-    private var stripes = 0
+    /** A stage clicked before the log arrived; applied once it has. */
+    private var pendingStage: Pair<String, Int?>? = null
 
     /** The stack frames currently underlined, so a Ctrl-click can be mapped to one by offset. */
-    private var hyperlinkFrames: List<StackFrame> = emptyList()
+    private val hyperlinkFrames = ArrayList<StackFrame>()
 
     init {
         status.foreground = UIUtil.getInactiveTextColor()
@@ -106,7 +115,7 @@ class LogEditorPanel(
         }
         val header = JPanel(BorderLayout()).apply {
             isOpaque = false
-            add(JBLabel("<html><b>${build.jobFullName} ${build.displayName}</b></html>"), BorderLayout.NORTH)
+            add(JBLabel("<html><b>${escape(build.jobFullName)} ${escape(build.displayName)}</b></html>"), BorderLayout.NORTH)
             add(toolbar, BorderLayout.CENTER)
             add(banner, BorderLayout.SOUTH)
         }
@@ -115,7 +124,7 @@ class LogEditorPanel(
         add(status, BorderLayout.SOUTH)
 
         // §9.6: Ctrl/Cmd-click on a stack frame opens its source line, or does nothing when the file
-        // is not in the project. Underlines are added with the other decorations.
+        // is not in the project.
         editor.addEditorMouseListener(object : EditorMouseListener {
             override fun mouseClicked(event: EditorMouseEvent) {
                 val awt = event.mouseEvent
@@ -127,36 +136,51 @@ class LogEditorPanel(
         })
 
         status.text = "Loading the console of ${build.displayName}…"
-        service.readConsole(build) { result -> result.fold(::showLog, ::showFailure) }
+        service.readConsole(build) { result -> if (!disposed) result.fold(::showLog, ::showFailure) }
     }
 
-    /** Scroll the editor to a 1-based line, used when a stage is clicked. */
-    fun scrollToLine(line: Int?) {
-        if (line == null || line <= 0) return
-        ApplicationManager.getApplication().invokeLater {
-            val last = maxOf(0, document.lineCount - 1)
-            val offset = document.getLineStartOffset((line - 1).coerceIn(0, last))
+    /**
+     * Scroll to stage [name], whose first line in the full log is [firstLine] when the console parse
+     * knows it. The stage's own `[Pipeline] { (name)` line is looked up in what is shown - which works
+     * on the stage-view path too, where no line range exists - and the full-log line number is mapped
+     * through truncation and the filter otherwise.
+     */
+    fun scrollToStage(name: String, firstLine: Int?) {
+        val view = view
+        if (view == null) {
+            pendingStage = name to firstLine
+            return
+        }
+        val line = view.stageDocumentLine(name) ?: firstLine?.let(view::documentLine) ?: return
+        scrollToDocumentLine(line)
+    }
+
+    private fun scrollToDocumentLine(line: Int) {
+        ApplicationManager.getApplication().invokeLater({
+            if (disposed || document.lineCount == 0) return@invokeLater
+            val offset = document.getLineStartOffset(line.coerceIn(0, document.lineCount - 1))
             editor.caretModel.moveToOffset(offset)
             editor.scrollingModel.scrollToCaret(ScrollType.CENTER)
-        }
+        }, project.disposed)
     }
 
     private fun showLog(read: ConsoleRead) {
-        log = read.log
-        fullText = read.log.text
+        val view = LogView(read.log)
+        this.view = view
+        tailId = read.tailId
+        view.setLive(read.moreData)
         banner.text = read.log.truncationBanner.orEmpty()
         banner.isVisible = read.log.truncationBanner != null
         applyFilter()
-        val error = read.log.firstErrorOffset
-        if (error != null) {
-            // §7.2: scroll to the first error, never the end. Deferred so the editor has been laid
-            // out at least once before we ask it to scroll.
-            ApplicationManager.getApplication().invokeLater {
-                editor.caretModel.moveToOffset(error.coerceAtMost(document.textLength))
-                editor.scrollingModel.scrollToCaret(ScrollType.CENTER)
-            }
+        val pending = pendingStage
+        pendingStage = null
+        if (pending != null) {
+            scrollToStage(pending.first, pending.second)
+        } else {
+            // §7.2: open at the first error, never at the end.
+            view.firstErrorDocumentLine()?.let(::scrollToDocumentLine)
         }
-        if (read.moreData) startTailing()
+        if (read.moreData && read.tailId != null) startTailing()
     }
 
     private fun showFailure(failure: Throwable) {
@@ -164,65 +188,87 @@ class LogEditorPanel(
     }
 
     /**
-     * Rebuild the editor's text for the current filter and re-stripe it. The full log is kept, so a
-     * filter change is a local operation and never a network call.
+     * Rebuild the editor's text for the current filter. The retained log is local, so a filter change
+     * is never a network call.
      */
     private fun applyFilter() {
+        val view = view ?: return
         val mode = filter.selectedItem as? LogFilterMode ?: LogFilterMode.ALL
-        val text = LogFilter.apply(
-            fullText,
-            mode,
-            collapseBlankLines = collapse.isSelected,
-        )
-        WriteCommandAction.runWriteCommandAction(project) { document.setText(text) }
-        applyStripes()
-        applyHyperlinks(text)
-        val lines = log?.totalLines ?: document.lineCount
-        val error = log?.firstErrorLine
+        apply(view.setFilter(mode, collapse.isSelected))
+    }
+
+    /** Put a [LogChange] into the document, with its stripes and hyperlinks. */
+    private fun apply(change: LogChange) {
+        when (change) {
+            is LogChange.Replace -> {
+                WriteCommandAction.runWriteCommandAction(project) { document.setText(change.text) }
+                editor.markupModel.removeAllHighlighters()
+                hyperlinkFrames.clear()
+                addStripes(change.stripes)
+                addHyperlinks(change.text, 0)
+            }
+            is LogChange.Append -> {
+                val base = document.textLength
+                if (change.text.isNotEmpty()) {
+                    WriteCommandAction.runWriteCommandAction(project) { document.insertString(base, change.text) }
+                }
+                addStripes(change.stripes)
+                addHyperlinks(change.text, base)
+            }
+            LogChange.None -> Unit
+        }
+        updateStatus()
+    }
+
+    private fun updateStatus() {
+        val view = view ?: return
+        val error = view.firstErrorLine
+        val shown = error != null && view.firstErrorDocumentLine() != null
         status.text = listOfNotNull(
-            "$lines lines",
-            error?.let { "first error at line $it" },
-            if (mode == LogFilterMode.ALL) null else "filtered: ${mode.name.lowercase()}",
+            "${view.totalLines} lines",
+            error?.let { if (shown) "first error at line $it" else "first error at line $it (not shown here)" },
+            if (view.mode == LogFilterMode.ALL) null else "filtered: ${view.mode.name.lowercase()}",
+            if (view.live) "following live output" else null,
         ).joinToString("  ·  ")
     }
 
-    /** Colour error and warning lines, capped so a huge log cannot drown the editor. */
-    private fun applyStripes() {
-        editor.markupModel.removeAllHighlighters()
-        stripes = 0
-        for (line in 0 until document.lineCount) {
-            if (stripes >= MAX_STRIPES) break
-            val start = document.getLineStartOffset(line)
-            val end = document.getLineEndOffset(line)
-            val text = document.getText(TextRange(start, end))
-            val attributes = when {
-                ConsoleStages.isErrorLine(text) -> errorAttributes()
-                LogFilter.isWarning(text) -> warningAttributes()
-                else -> null
-            } ?: continue
-            editor.markupModel.addRangeHighlighter(
+    /** Gutter bar, error-stripe mark and a light tint per error/warning line ([LogView] caps the count). */
+    private fun addStripes(stripes: List<Stripe>) {
+        for (stripe in stripes) {
+            if (stripe.line >= document.lineCount) continue
+            val colour = if (stripe.kind == LineKind.ERROR) UIUtil.getErrorForeground() else WARNING_COLOR
+            val start = document.getLineStartOffset(stripe.line)
+            val end = document.getLineEndOffset(stripe.line)
+            val highlighter = editor.markupModel.addRangeHighlighter(
                 start,
                 end,
                 HighlighterLayer.ERROR,
-                attributes,
+                TextAttributes(null, translucent(colour), null, null, Font.PLAIN),
                 HighlighterTargetArea.LINES_IN_RANGE,
             )
-            stripes++
+            highlighter.setErrorStripeMarkColor(colour)
+            highlighter.isThinErrorStripeMark = stripe.kind == LineKind.WARNING
+            highlighter.lineMarkerRenderer = LineMarkerRenderer { _, graphics, rectangle ->
+                graphics.color = colour
+                graphics.fillRect(rectangle.x, rectangle.y, JBUI.scale(3), rectangle.height)
+            }
         }
     }
 
     /**
-     * §9.6: underline every stack frame / compiler location in the current text. The offsets are
-     * into the same text the document holds, so a click maps straight back. Capped so a pathological
-     * log cannot add an unbounded number of highlighters.
+     * §9.6: underline every stack frame / compiler location in [text], which starts at document
+     * offset [base]. Capped so a pathological log cannot add an unbounded number of highlighters.
      */
-    private fun applyHyperlinks(text: String) {
-        hyperlinkFrames = StackFrames.find(text, limit = MAX_HYPERLINKS)
+    private fun addHyperlinks(text: String, base: Int) {
+        val room = MAX_HYPERLINKS - hyperlinkFrames.size
+        if (room <= 0 || text.isEmpty()) return
         val attributes = linkAttributes()
-        for (frame in hyperlinkFrames) {
+        for (frame in StackFrames.find(text, limit = room)) {
+            val shifted = frame.copy(start = frame.start + base, end = frame.end + base)
+            hyperlinkFrames += shifted
             editor.markupModel.addRangeHighlighter(
-                frame.start,
-                frame.end,
+                shifted.start,
+                shifted.end,
                 HighlighterLayer.SYNTAX,
                 attributes,
                 HighlighterTargetArea.EXACT_RANGE,
@@ -238,52 +284,43 @@ class LogEditorPanel(
         Font.PLAIN,
     )
 
-    private fun errorAttributes(): TextAttributes = TextAttributes(
-        null,
-        translucent(UIUtil.getErrorForeground()),
-        null,
-        null,
-        Font.PLAIN,
-    )
-
-    private fun warningAttributes(): TextAttributes = TextAttributes(
-        null,
-        translucent(WARNING_COLOR),
-        null,
-        null,
-        Font.PLAIN,
-    )
-
     private fun translucent(colour: Color): Color = Color(colour.red, colour.green, colour.blue, ALPHA)
 
     /**
      * §9.5: poll `progressiveText` every two seconds while the build runs, appending only the delta.
-     * Stops when Jenkins omits `X-More-Data`, or on the first failure (a dead server is reported,
-     * not retried into an infinite loop).
+     * Stops when Jenkins omits `X-More-Data`, or on the first failure (a dead server is reported, not
+     * retried into an infinite loop). The tick decides on the EDT, where the window's visibility may
+     * be read; a tick whose previous request is still on the wire is skipped by the service.
      */
     private fun startTailing() {
-        if (tailFuture != null) return
+        if (tailFuture != null || disposed) return
+        val id = tailId ?: return
         tailFuture = scheduler.scheduleWithFixedDelay(
-            { if (isShowing()) service.tailConsole(build) { result -> result.fold(::appendDelta, ::tailFailed) } },
+            {
+                ApplicationManager.getApplication().invokeLater({
+                    if (!disposed && isShowing()) {
+                        service.tailConsole(id) { result -> if (!disposed) result.fold(::appendDelta, ::tailFailed) }
+                    }
+                }, project.disposed)
+            },
             TAIL_PERIOD_MILLIS,
             TAIL_PERIOD_MILLIS,
             TimeUnit.MILLISECONDS,
         )
     }
 
-    private fun appendDelta(delta: dev.stagecraft.jenkins.TailDelta) {
+    private fun appendDelta(delta: TailDelta) {
+        val view = view ?: return
         if (delta.resetDetected) {
             // Jenkins reset to zero and re-sent the whole log: replace rather than duplicate.
-            fullText = delta.text
-            applyFilter()
-        } else if (delta.text.isNotEmpty()) {
-            fullText += delta.text
-            WriteCommandAction.runWriteCommandAction(project) {
-                document.insertString(document.textLength, delta.text)
-            }
-            status.text = "${document.lineCount} lines  ·  following live output"
+            apply(view.reset(dev.stagecraft.jenkins.ConsoleLogReader().read(delta.text)))
+        } else {
+            apply(view.append(delta.text))
         }
-        if (!delta.moreData) stopTailing()
+        if (!delta.moreData) {
+            apply(view.setLive(false))
+            stopTailing()
+        }
     }
 
     private fun tailFailed(failure: Throwable) {
@@ -297,9 +334,10 @@ class LogEditorPanel(
     }
 
     override fun dispose() {
+        disposed = true
         stopTailing()
         scheduler.shutdownNow()
-        service.stopTailing(build)
+        tailId?.let(service::stopTailing)
         EditorFactory.getInstance().releaseEditor(editor)
     }
 
@@ -307,7 +345,6 @@ class LogEditorPanel(
         /** §9.5: two-second cadence. */
         const val TAIL_PERIOD_MILLIS = 2_000L
 
-        const val MAX_STRIPES = 5_000
         const val MAX_HYPERLINKS = 1_000
         const val ALPHA = 40
 
@@ -316,5 +353,9 @@ class LogEditorPanel(
 
         /** The combo's items are the enum itself; [LogFilterMode] renders its own name in the list. */
         val FILTERS = LogFilterMode.entries.toTypedArray()
+
+        /** Job names may contain `&` and `<`, and the header is HTML. */
+        fun escape(text: String): String =
+            text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     }
 }

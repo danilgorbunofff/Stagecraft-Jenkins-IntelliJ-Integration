@@ -9,7 +9,7 @@ plugins {
 }
 
 group = "dev.stagecraft"
-version = "0.1.0"
+version = "1.0.0"
 
 repositories {
     mavenCentral()
@@ -36,17 +36,17 @@ dependencies {
     testRuntimeOnly(libs.junit.platform.launcher)
 }
 
-// §9.1 compatibility floor: 2024.2 (since-build 242).
+// §9.1 compatibility floor: 2024.3 (since-build 243).
 //
 // The floor is set by the Kotlin standard library, not by the JVM. A plugin never bundles its own
 // stdlib - it runs on the one the IDE ships - and Kotlin 2.4 can only emit code for a stdlib of 2.0
-// or newer ("API version 1.8 is no longer supported"). 2024.2 is the first IDE that ships Kotlin
-// 2.0, so it is the oldest IDE this build can honestly claim. Below it, every enum's static
-// initializer calls `kotlin.enums.EnumEntriesKt` (Kotlin 1.9+) and the plugin dies with
-// NoClassDefFoundError on 2023.1-2023.2.
+// or newer ("API version 1.9 is no longer supported"). 2024.3 is the first IDE that ships Kotlin
+// 2.0 (2.0.21; 2024.2 ships 1.9.24, as `verifyPluginProjectConfiguration` reports), so it is the
+// oldest IDE this build can honestly claim. Below 2023.3, every enum's static initializer calls
+// `kotlin.enums.EnumEntriesKt` (Kotlin 1.9+) and the plugin dies with NoClassDefFoundError.
 //
-// apiVersion pins the stdlib surface to what 2024.2 ships, so the compiler rejects any newer call
-// instead of leaving it to fail at runtime on the oldest supported IDE. 2024.2 also runs on Java 21,
+// apiVersion pins the stdlib surface to what 2024.3 ships, so the compiler rejects any newer call
+// instead of leaving it to fail at runtime on the oldest supported IDE. 2024.3 also runs on Java 21,
 // so the old Java 17 bytecode workaround is gone.
 kotlin {
     jvmToolchain(21)
@@ -66,14 +66,20 @@ tasks.withType<KotlinCompile>().configureEach {
 intellijPlatform {
     pluginConfiguration {
         id = "dev.stagecraft.jenkins"
-        name = "Stagecraft"
+        // §8.2: the listing title is the plugin name, so it carries the search words. The charter's
+        // `•` is not allowed in a plugin name (verifyPluginStructure: letters, digits, spaces and
+        // .,+_-/:()#'&[]| only), so the separator is a hyphen.
+        name = "Stagecraft - Jenkins Build & Log Viewer"
+        // §8.2's first and second lines, verbatim. Marketplace requires the description to open
+        // with at least 40 Latin characters, which the first line does.
         description = provider {
-            "Stagecraft • Jenkins Build & Log Viewer. Your Jenkins build failed: see which stage " +
-                "broke, its log, and click the failing line straight into your editor - without " +
-                "leaving the IDE. Finds your job from the git remote, so it works with folders, " +
-                "multibranch jobs and thousands of jobs."
+            "<p>Your Jenkins build failed. See which stage broke, its log, and click the failing " +
+                "line straight into your editor \u2014 without leaving the IDE.</p>" +
+                "<p>Stagecraft finds your Jenkins server and job from your git remote. It never " +
+                "lists the whole server, so it works on installations with folders, multibranch " +
+                "jobs and thousands of jobs.</p>"
         }
-        changeNotes = provider { "0.1.0 - first build: branch build list, stage view, bounded log with live tail, test results and jump-to-source, Jenkinsfile lint." }
+        changeNotes = provider { "1.0.0 - first release: branch build list, stage view, bounded log with live tail, test results and jump-to-source, Jenkinsfile lint." }
 
         // §8.2/§8.3: the listing's vendor and its permanent product code. The code is the
         // candidate from the charter; it must be registered with JetBrains before a paid listing
@@ -82,16 +88,29 @@ intellijPlatform {
             name = "Stagecraft"
         }
         ideaVersion {
-            sinceBuild = "242"
+            sinceBuild = "243"
             untilBuild = provider { null }
         }
         productDescriptor {
             code = "PSTAGECRAFT"
             releaseDate = "20261003"
-            releaseVersion = "1"
+            // Marketplace wants the release line as an integer of at least two digits (major and
+            // minor digits: "10" is 1.0; "01" is rejected). A licence covers every release up to the
+            // purchased line, so this is the line the first paid release is sold as - and
+            // verifyPluginStructure requires the plugin version to start with it (1.0.x).
+            releaseVersion = "10"
         }
     }
     buildSearchableOptions = false
+
+    // §9.8 / §13: the build compiles against 2025.2 but claims 2024.3+, so the claim is checked by
+    // JetBrains' Plugin Verifier against the IDEs that range covers: `./gradlew verifyPlugin`
+    // (downloads each IDE once). It flags any API the oldest supported IDE lacks.
+    pluginVerification {
+        ides {
+            recommended()
+        }
+    }
 }
 
 tasks.test {

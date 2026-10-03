@@ -66,7 +66,7 @@ class ConsoleLogTest {
     }
 
     @Test
-    fun `a log longer than the caps keeps the head and the tail and marks the drop`() {
+    fun `a log longer than the caps keeps whole head and tail lines and marks the drop`() {
         val prefix = "0123456789\n"
         val middle = "middle-noise\n".repeat(100)
         val tail = "tail-line\n".repeat(100)
@@ -74,11 +74,16 @@ class ConsoleLogTest {
         val log = read(whole, head = 30, tail = 40)
 
         assertTrue(log.truncated)
-        assertTrue(log.text.startsWith(whole.take(30)))
-        assertTrue(log.text.endsWith(whole.takeLast(40)))
+        // Both cuts snap to line boundaries: no half line on either side of the marker.
+        assertEquals("0123456789\nmiddle-noise\n", log.head)
+        assertTrue(log.tail.startsWith("tail-line\n") && whole.endsWith(log.tail), log.tail)
         assertTrue(log.text.contains(ConsoleLog.TRUNCATION_MARKER))
+        assertEquals(log.head + log.markerLine + log.tail, log.text)
         assertTrue(log.truncationBanner!!.contains("showing the first"), log.truncationBanner!!)
         assertEquals(whole.length.toLong(), log.totalChars)
+        // Every line is accounted for: shown in the head, dropped, or shown in the tail.
+        val tailLines = log.tail.count { it == '\n' }
+        assertEquals(201, 2 + log.droppedLines + tailLines)
     }
 
     @Test
@@ -123,8 +128,8 @@ class ConsoleLogTest {
         assertTrue(log.totalChars > 50L * 1024 * 1024, "streamed ${log.totalChars} chars")
         assertTrue(log.truncated)
         assertTrue(
-            log.text.length <= head + ConsoleLog.TRUNCATION_MARKER.length + tail,
-            "retained ${log.text.length} chars, expected <= ${head + tail}",
+            log.text.length <= head + log.markerLine.length + tail,
+            "retained ${log.text.length} chars, expected <= ${head + tail} plus the marker",
         )
     }
 
@@ -147,5 +152,65 @@ class ConsoleLogTest {
         }
 
         override fun close() = Unit
+    }
+
+    // ---------------------------------------------------------------- audit regressions
+
+    @Test
+    fun `a 50 MB log is read inside the 3 s budget and stays one byte per character`() {
+        val chunk = "a line of ordinary build output\n"
+        val times = (50 * 1024 * 1024) / chunk.length + 1
+        val started = System.nanoTime()
+
+        val log = ConsoleLogReader().read(RepeatingReader(chunk, times))
+
+        val millis = (System.nanoTime() - started) / 1_000_000
+        assertTrue(millis < 3_000, "read 50 MB in $millis ms, budget 3000 ms")
+        // One non-Latin-1 character (the old marker's U+2026) doubles the retained size of the text.
+        assertTrue(log.markerLine.all { it.code < 256 }, log.markerLine)
+        assertTrue(log.text.all { it.code < 256 })
+    }
+
+    @Test
+    fun `a line number maps exactly through the dropped middle`() {
+        val whole = (1..300).joinToString("") { "line $it\n" }
+        val log = read(whole, head = 100, tail = 100)
+
+        assertTrue(log.truncated)
+        val lines = log.text.split('\n')
+        assertEquals("line 1", lines[log.displayLine(1)!!])
+        assertEquals("line 300", lines[log.displayLine(300)!!])
+        assertEquals(null, log.displayLine(150)) // dropped
+        assertTrue(lines[log.headLines].startsWith(ConsoleLog.TRUNCATION_MARKER))
+    }
+
+    @Test
+    fun `an error cut in half at the head boundary is not mistaken for an error`() {
+        // The old reader cut mid-line, so "[INFO] retrying after ERROR: transient" could reach the
+        // view as a line starting "ERROR: transient". Snapped cuts never show a fragment.
+        val whole = "ok\n".repeat(9) + "[INFO] retrying after ERROR: transient\n" + "x\n".repeat(200)
+        val log = read(whole, head = 40, tail = 20)
+
+        assertNull(log.firstErrorLine)
+        assertNull(log.firstErrorOffset)
+        assertTrue(log.text.lines().none { it.startsWith("ERROR") }, log.text)
+    }
+
+    @Test
+    fun `a literal note preamble without its end does not swallow the rest of the log`() {
+        val text = "before \u001B[8mha:not a note\nERROR: still here\nafter\n"
+
+        val log = ConsoleLogReader().read(text)
+
+        assertEquals(3, log.totalLines)
+        assertEquals(2, log.firstErrorLine)
+        assertTrue(log.text.contains("ERROR: still here"))
+    }
+
+    @Test
+    fun `a log ending in a partial preamble keeps it as text`() {
+        val log = ConsoleLogReader().read("done\u001B[")
+
+        assertEquals("done\u001B[", log.text)
     }
 }

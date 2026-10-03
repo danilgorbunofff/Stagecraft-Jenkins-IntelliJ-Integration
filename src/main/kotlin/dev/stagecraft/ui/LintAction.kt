@@ -1,5 +1,6 @@
 package dev.stagecraft.ui
 
+import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
@@ -35,7 +36,23 @@ class LintAction : AnAction() {
         }.show()
     }
 
+    /**
+     * Only on a Jenkinsfile (`Jenkinsfile`, `Jenkinsfile.prod`, `deploy.jenkinsfile`, ...): offering to
+     * lint a Java file, a diff or Stagecraft's own log against the pipeline linter is noise.
+     */
     override fun update(event: AnActionEvent) {
-        event.presentation.isEnabledAndVisible = event.getData(CommonDataKeys.EDITOR) != null
+        val name = event.getData(CommonDataKeys.VIRTUAL_FILE)?.name
+        event.presentation.isEnabledAndVisible =
+            event.getData(CommonDataKeys.EDITOR) != null && name != null && isJenkinsfile(name)
+    }
+
+    /** [update] reads only the editor and file from the data context, so it may run off the EDT. */
+    override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
+
+    companion object {
+        fun isJenkinsfile(fileName: String): Boolean {
+            val lower = fileName.lowercase()
+            return lower == "jenkinsfile" || lower.startsWith("jenkinsfile.") || lower.endsWith(".jenkinsfile")
+        }
     }
 }

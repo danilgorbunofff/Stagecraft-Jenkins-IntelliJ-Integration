@@ -1,6 +1,7 @@
 <idea-plugin>
     <id>dev.stagecraft.jenkins</id>
-    <name>Stagecraft</name>
+    <!-- name and description are set from build.gradle.kts (§8.2 listing title and lines). -->
+    <name>Stagecraft - Jenkins Build &amp; Log Viewer</name>
     <vendor>Stagecraft</vendor>
 
     <description><![CDATA[
@@ -23,9 +24,12 @@
                              id="dev.stagecraft.settings"
                              displayName="Stagecraft"
                              parentId="tools"/>
+        <!-- §7.2: Appearance | Notifications | Jenkins Builds. -->
         <notificationGroup id="Stagecraft builds"
-                           displayName="Stagecraft builds"
+                           displayName="Jenkins Builds"
                            displayType="BALLOON"/>
+        <!-- §7.2: start the service at project open, so branch balloons do not need the window. -->
+        <postStartupActivity implementation="dev.stagecraft.service.StagecraftStartup"/>
     </extensions>
 
     <actions>

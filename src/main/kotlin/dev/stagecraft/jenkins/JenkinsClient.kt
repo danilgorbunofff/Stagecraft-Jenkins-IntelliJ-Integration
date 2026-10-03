@@ -346,21 +346,67 @@ class JenkinsClient(
     }
 
     /**
-     * Trigger a job's build, with parameters when any are given (§7.4). Feature-gated honestly: a
-     * 403 is reported as "not allowed" rather than thrown, because a server that forbids the trigger
-     * is a normal configuration, not a failure of the load.
+     * Trigger a job's build, with parameters when any are given (§7.4). Feature-gated honestly: every
+     * refusal is reported as what it is - not allowed, a CSRF crumb Jenkins kept rejecting, not
+     * visible, disabled, single sign-on - rather than thrown, because a server that forbids the
+     * trigger is a normal configuration, not a failure of the load.
+     *
+     * A parameterized job must be triggered through `buildWithParameters` even with no values to
+     * send (Jenkins then uses the defaults); `build` on such a job is refused.
      */
-    fun triggerBuild(rawPath: List<String>, parameters: Map<String, String> = emptyMap()): RebuildResult {
-        val suffix = if (parameters.isEmpty()) "build" else "buildWithParameters"
+    fun triggerBuild(
+        rawPath: List<String>,
+        parameters: Map<String, String> = emptyMap(),
+        parameterized: Boolean = parameters.isNotEmpty(),
+    ): RebuildResult {
+        val suffix = if (parameterized) "buildWithParameters" else "build"
         val url = JenkinsUrls.jobUrl(http.baseUrl, rawPath) + suffix
         val response = http.post(url, formEncode(parameters).toByteArray(Charsets.UTF_8))
+        val crumbRejected = response.status == 403 && response.text.contains(JenkinsHttp.NO_VALID_CRUMB, ignoreCase = true)
         return when {
-            response.isSuccess -> RebuildResult(true, "Build queued.")
+            response.isSuccess -> RebuildResult(true, if (parameters.isEmpty()) "Build queued." else "Build queued with the same parameters.")
+            response.status == 401 -> RebuildResult(false, "Jenkins rejected the credentials (HTTP 401). Check the user name and API token.")
+            crumbRejected -> RebuildResult(
+                false,
+                "Jenkins rejected the CSRF crumb even after a fresh one was fetched. " +
+                    (http.auth.lastCrumbError?.let { "The crumb request said: $it. " }.orEmpty()) +
+                    "An API token needs no crumb; consider using one instead of a password.",
+            )
             response.status == 403 -> RebuildResult(false, "This account is not allowed to trigger this job.")
-            response.status == 404 ->
-                RebuildResult(false, "The job could not be found, or is not visible to this account.")
+            response.status == 404 -> RebuildResult(false, "The job could not be found, or is not visible to this account.")
+            response.status == 409 -> RebuildResult(false, "Jenkins refused: the job is disabled.")
+            response.status in 300..399 -> RebuildResult(
+                false,
+                "Jenkins redirected the request to ${response.header("Location") ?: "another page"} instead of " +
+                    "queuing it; the server likely uses single sign-on. API tokens still work - ask your Jenkins administrator for one.",
+            )
             else -> RebuildResult(false, "Jenkins answered HTTP ${response.status}.")
         }
+    }
+
+    /**
+     * The parameters [buildUrl] ran with (§7.2 "Re-run with parameters"), from its
+     * `ParametersAction`. Empty for an unparameterized build. Values that are not plain strings,
+     * numbers or booleans (files, credentials, passwords) cannot be re-sent and are left to the job's
+     * defaults.
+     */
+    fun buildParameters(buildUrl: String): Map<String, String> {
+        val url = buildApiJson(buildUrl, "actions[_class,parameters[name,value]]")
+        val result = LinkedHashMap<String, String>()
+        for (action in parseBody(url, http.get(url)).objects("actions")) {
+            for (parameter in action.objects("parameters")) {
+                val name = parameter.str("name") ?: continue
+                val value = parameter["value"] as? JsonPrimitive ?: continue
+                result[name] = value.content
+            }
+        }
+        return result
+    }
+
+    /** Whether the job can be triggered at all: Jenkins reports `buildable: false` for a disabled job. */
+    fun isBuildable(rawPath: List<String>): Boolean {
+        val url = JenkinsUrls.apiJson(JenkinsUrls.jobUrl(http.baseUrl, rawPath), "buildable")
+        return parseBody(url, http.get(url)).bool("buildable") ?: true
     }
 
     private fun formEncode(fields: Map<String, String>): String =
@@ -368,7 +414,25 @@ class JenkinsClient(
             URLEncoder.encode(key, "UTF-8") + "=" + URLEncoder.encode(value, "UTF-8")
         }
 
+    /**
+     * A test report, flat or aggregated. A Maven or matrix build answers with `childReports`, each
+     * holding its own `result`; the counts and cases are summed over them. A missing `passCount` is
+     * derived, and never below zero.
+     */
     private fun parseTestReport(obj: JsonObject): TestReport {
+        val children = obj.objects("childReports").mapNotNull { it.obj("result") }
+        if (children.isNotEmpty()) {
+            val parts = children.map(::parseTestReport)
+            val cases = parts.flatMap { it.cases }
+            return TestReport(
+                totalCount = cases.size,
+                failCount = parts.sumOf { it.failCount },
+                skipCount = parts.sumOf { it.skipCount },
+                passCount = parts.sumOf { it.passCount },
+                durationMillis = parts.mapNotNull { it.durationMillis }.takeIf { it.isNotEmpty() }?.sum(),
+                cases = cases,
+            )
+        }
         val cases = ArrayList<TestCase>()
         for (suite in obj.objects("suites")) {
             val enclosing = suite.arr("enclosingBlockNames")
@@ -389,7 +453,7 @@ class JenkinsClient(
         }
         val fail = obj.int("failCount") ?: cases.count { it.failed }
         val skip = obj.int("skipCount") ?: cases.count { it.skipped }
-        val pass = obj.int("passCount") ?: (cases.size - fail - skip)
+        val pass = obj.int("passCount") ?: (cases.size - fail - skip).coerceAtLeast(0)
         return TestReport(
             totalCount = cases.size,
             failCount = fail,

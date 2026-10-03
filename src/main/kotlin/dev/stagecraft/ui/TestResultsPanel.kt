@@ -9,6 +9,7 @@ import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import dev.stagecraft.jenkins.StackFrames
+import dev.stagecraft.jenkins.TestFrames
 import dev.stagecraft.model.BuildRef
 import dev.stagecraft.model.TestCase
 import dev.stagecraft.model.TestReport
@@ -24,9 +25,10 @@ import javax.swing.JPanel
 /**
  * The build's test results (§9.6), failed tests first.
  *
- * Core Jenkins, no plugin. Double-clicking a failed test opens the test's own source line, using the
- * first frame of its `errorStackTrace` (the frame in the test itself, not the code it called). A
- * test whose file is not in the project is left as plain text, like every other hyperlink.
+ * Core Jenkins, no plugin. Double-clicking a failed test opens the test's own source line: the frame of
+ * its `errorStackTrace` that belongs to the test's class ([TestFrames.testFrame]) - not the first
+ * frame, which in a real trace is the assertion library. A test whose file is not in the project is
+ * left as plain text, like every other hyperlink.
  */
 class TestResultsPanel(
     private val project: Project,
@@ -78,7 +80,7 @@ class TestResultsPanel(
 
     private fun openSelected() {
         val case = list.selectedValue ?: return
-        val frame = case.errorStackTrace?.let { StackFrames.find(it).firstOrNull() } ?: return
+        val frame = case.errorStackTrace?.let { TestFrames.testFrame(case.className, StackFrames.find(it)) } ?: return
         SourceNavigator.navigate(project, frame)
     }
 
@@ -100,7 +102,7 @@ class TestResultsPanel(
                 else -> "passed"
             }
             val duration = case.durationMillis?.let { "  ${"%.2fs".format(it / 1000.0)}" }.orEmpty()
-            val stage = case.enclosingBlockNames.firstOrNull()?.let { "  [$it]" }.orEmpty()
+            val stage = case.enclosingBlockNames.firstOrNull()?.let { "  [${escape(it)}]" }.orEmpty()
             text = "<html><b>${escape(case.name)}</b>&nbsp;&nbsp;$status$duration$stage</html>"
             toolTipText = case.errorDetails ?: case.fullName
             return this

@@ -659,4 +659,25 @@ class JenkinsClientTest {
         assertTrue(client(fake).jobTreeDeep().complete)
         assertFalse(client(fake).jobTreeDeep(maxSubtreeRequests = 1).complete)
     }
+
+    @Test
+    fun `an aggregated test report sums its child reports and never goes negative`() {
+        val fake = FakeTransport()
+        fake.onGetPrefix(
+            mainBuildUrl + "testReport/api/json",
+            Fixtures.of(
+                """{"childReports":[""" +
+                    """{"result":{"failCount":1,"skipCount":0,"passCount":2,"suites":[{"cases":[{"name":"a","className":"A","status":"FAILED"},{"name":"b","className":"A","status":"PASSED"},{"name":"c","className":"A","status":"PASSED"}]}]}},""" +
+                    """{"result":{"failCount":0,"skipCount":1,"suites":[{"cases":[{"name":"d","className":"B","status":"SKIPPED"}]}]}}""" +
+                    """],"failCount":1,"skipCount":1,"totalCount":4}""",
+            ),
+        )
+
+        val report = client(fake).testReport(mainBuildUrl)!!
+
+        assertEquals(4, report.totalCount)
+        assertEquals(1, report.failCount)
+        assertEquals(2, report.passCount)
+        assertTrue(report.summary.startsWith("2 passed"), report.summary)
+    }
 }

@@ -29,24 +29,32 @@ class BuildNotifications(private val notifier: BuildNotifier) {
 }
 
 /**
- * Detects a build that appeared **after** the tool window already had a list on screen.
+ * Detects builds that finished **after** the first live list for their job was seen (§7.2).
  *
- * The first list for a job is the baseline: the builds that already existed when the window opened
- * are not announced, or every IDE start would fire a balloon per build. Only a build with a number
- * higher than anything seen, and no longer running, is returned. Headless, so the rule is tested.
+ * The first live list for a job is the baseline: builds that had already finished when Stagecraft
+ * first looked are not announced, or every IDE start would fire a balloon per build. After that,
+ * every build that is seen finished for the first time is returned - all of them, not only the
+ * newest, so two builds that finish between two polls get two balloons, in build order. A build
+ * that was running at the baseline is announced when it finishes, and so is the first build of a
+ * branch that had no finished build yet: an empty baseline is still a baseline.
+ *
+ * Callers must only feed **live** lists. A list painted from the disk cache is days old, and using
+ * it as the baseline would announce every build that finished while the IDE was closed.
  */
 class NewBuildWatcher {
 
-    private val seenMax = HashMap<String, Int>()
+    private val finishedSeen = HashMap<String, MutableSet<Int>>()
 
-    fun observe(jobKey: String, builds: List<BuildRef>): BuildRef? {
-        // The baseline is the highest *finished* build, so a build that is running now is still new
-        // when it finishes rather than being swallowed by the poll that first saw it.
+    @Synchronized
+    fun observe(jobKey: String, builds: List<BuildRef>): List<BuildRef> {
         val finished = builds.filter { !it.isRunning }
-        val maxFinished = finished.maxOfOrNull { it.number } ?: return null
-        val previous = seenMax[jobKey]
-        seenMax[jobKey] = maxOf(previous ?: maxFinished, maxFinished)
-        if (previous == null) return null
-        return finished.filter { it.number > previous }.maxByOrNull { it.number }
+        val seen = finishedSeen[jobKey]
+        if (seen == null) {
+            finishedSeen[jobKey] = finished.mapTo(HashSet()) { it.number }
+            return emptyList()
+        }
+        val fresh = finished.filter { it.number !in seen }.sortedBy { it.number }
+        fresh.forEach { seen += it.number }
+        return fresh
     }
 }

@@ -77,4 +77,68 @@ class StackFrameTest {
     fun `plain text has no frames`() {
         assertTrue(StackFrames.find("[Pipeline] stage\nhello world\n").isEmpty())
     }
+
+    // ---------------------------------------------------------------- audit regressions
+
+    @Test
+    fun `a kotlin backtick test name is still a jvm frame`() {
+        val frame = StackFrames.find("    at x.FooTest.should compute total(FooTest.kt:12)").single()
+
+        assertEquals("x.FooTest", frame.className)
+        assertEquals("should compute total", frame.method)
+        assertEquals(12, frame.line)
+    }
+
+    @Test
+    fun `an unindented frame is underlined from its own at`() {
+        val text = "previous line\nat a.B.c(B.java:3)"
+
+        val frame = StackFrames.find(text).single()
+
+        assertEquals(text.indexOf("at a.B"), frame.start)
+    }
+
+    @Test
+    fun `go, tsc and rustc errors are locations too`() {
+        val text = "./main.go:10:5: undefined: x\nsrc/a.ts(10,5): error TS2322: nope\nerror[E0425]: x\n  --> src/main.rs:10:5\n"
+
+        val files = StackFrames.find(text).map { it.file to it.line }
+
+        assertEquals(listOf("./main.go" to 10, "src/a.ts" to 10, "src/main.rs" to 10), files)
+    }
+
+    @Test
+    fun `a huge single line is skipped, not scanned for seconds`() {
+        val line = "value at index ".repeat(20_000) // 300 KB, the shape that took 17 s
+        val started = System.nanoTime()
+
+        val frames = StackFrames.find(line + "\n    at a.B.c(B.java:3)\n")
+
+        val millis = (System.nanoTime() - started) / 1_000_000
+        assertTrue(millis < 500, "took $millis ms")
+        assertEquals(1, frames.size)
+    }
+
+    @Test
+    fun `a failed test opens its own frame, not the assertion library's`() {
+        val trace = """
+            org.opentest4j.AssertionFailedError: expected: <1> but was: <2>
+            	at org.junit.jupiter.api.AssertionFailureBuilder.build(AssertionFailureBuilder.java:151)
+            	at org.junit.jupiter.api.Assertions.assertEquals(Assertions.java:166)
+            	at com.company.OrderServiceTest.discount(OrderServiceTest.java:42)
+            	at java.base/java.lang.reflect.Method.invoke(Method.java:580)
+        """.trimIndent()
+
+        val frame = TestFrames.testFrame("com.company.OrderServiceTest", StackFrames.find(trace))
+
+        assertEquals("OrderServiceTest.java", frame?.file)
+        assertEquals(42, frame?.line)
+    }
+
+    @Test
+    fun `without a matching class the first non-framework frame is the test`() {
+        val trace = "\tat org.junit.Assert.fail(Assert.java:89)\n\tat com.x.Helper.check(Helper.kt:7)\n"
+
+        assertEquals("Helper.kt", TestFrames.testFrame("com.x.OtherTest", StackFrames.find(trace))?.file)
+    }
 }

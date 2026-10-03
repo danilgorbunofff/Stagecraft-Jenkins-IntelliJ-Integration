@@ -377,6 +377,28 @@ class ConsoleStagesTest {
         assertEquals(StageSource.BUILD, refs[0].source)
         assertNull(refs[0].firstLine)
     }
+
+    // ---------------------------------------------------------------- audit regressions
+
+    @Test
+    fun `a streamed parse equals the in-memory parse`() {
+        val text = Fixtures.text("08.console-main.txt")
+
+        val streamed = ConsoleStages.parse(java.io.StringReader(text))
+
+        assertEquals(ConsoleStages.parse(text), streamed)
+    }
+
+    @Test
+    fun `a console over the old 8 MB limit still parses into stages`() {
+        val noise = "x".repeat(99) + "\n"
+        val text = "[Pipeline] { (Build)\n" + noise.repeat(100_000) + "[Pipeline] }\n" // ~10 MB
+
+        val parse = ConsoleStages.parse(java.io.StringReader(text))
+
+        assertEquals(listOf("Build"), parse.stages.map { it.name })
+        assertEquals(100_002, parse.stages.single().lastLine)
+    }
 }
 
 private const val OPEN = "[Pipeline] Start of Pipeline"

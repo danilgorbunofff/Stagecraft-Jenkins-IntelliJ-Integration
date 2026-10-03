@@ -5,7 +5,8 @@ account and payment parts are external and cannot be done from here.
 
 ## Title
 
-`Stagecraft • Jenkins Build & Log Viewer`
+`Stagecraft • Jenkins Build & Log Viewer` (charter). Shipped as the plugin name
+`Stagecraft - Jenkins Build & Log Viewer`: `verifyPluginStructure` rejects `•` in a plugin name.
 
 `Brand • what it does with the words the buyer searches`. `Jenkins` is the only keyword that matters;
 `Build & Log` are the two words a stuck Jenkins user types. **Not** in the title: `Pipeline`, `CI/CD`,

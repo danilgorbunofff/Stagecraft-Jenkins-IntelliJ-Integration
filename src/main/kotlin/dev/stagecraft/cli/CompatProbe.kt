@@ -5,6 +5,7 @@ import dev.stagecraft.jenkins.JenkinsAuth
 import dev.stagecraft.jenkins.JenkinsClient
 import dev.stagecraft.jenkins.JenkinsCredential
 import dev.stagecraft.jenkins.JenkinsException
+import dev.stagecraft.jenkins.JenkinsUrls
 import dev.stagecraft.jenkins.LintClient
 import java.io.FileDescriptor
 import java.io.FileOutputStream
@@ -85,7 +86,8 @@ private fun run(args: Array<String>, env: Map<String, String>, out: PrintStream,
             "authenticated as ${me.id} on ${client.serverBaseUrl}"
         }
         check("version") {
-            val version = client.version ?: return@check "no X-Jenkins header"
+            // Every Jenkins response carries X-Jenkins; its absence means something else answered.
+            val version = client.version ?: error("no X-Jenkins header on any response so far")
             client.versionWarning?.let { "warn: $it" } ?: "Jenkins $version"
         }
         check("job-tree") {
@@ -93,29 +95,43 @@ private fun run(args: Array<String>, env: Map<String, String>, out: PrintStream,
             "${jobs.size} job(s) in one tree request"
         }
         check("lint") {
-            val result = LintClient(client).validate("pipeline { agent any; stages { stage('x') { steps { echo 'hi' } } } }")
-            if (result.valid) "validated" else "linter answered: ${result.headline}"
+            // A known-valid Jenkinsfile: anything but "valid" is a failure of the lint path.
+            val result = LintClient(client).validate(VALID_JENKINSFILE)
+            if (!result.valid) error("the known-valid sample was rejected: ${result.headline}")
+            val crumb = if (credential.requiresCrumb) {
+                // §9.2: a password POST must have gone through the crumb flow.
+                if (!client.http.auth.crumbCache.isLoaded) error("password auth posted without asking for a crumb")
+                if (client.http.auth.crumbCache.isDisabled) ", CSRF off on this server" else ", with crumb"
+            } else {
+                ", crumbless (API token)"
+            }
+            "validated$crumb"
         }
 
-        if (buildUrl == null) {
-            out.println("build: SKIP no --build= URL given")
-        } else {
-            val rawPath = rawPathFromBuildUrl(buildUrl)
-            check("builds") {
-                val builds = client.builds(rawPath)
-                "${builds.size} build(s) of ${rawPath.joinToString("/")}"
+        val rawPath = buildUrl?.let(::rawPathFromBuildUrl).orEmpty()
+        when {
+            buildUrl == null -> out.println("build: SKIP no --build= URL given")
+            rawPath.isEmpty() -> {
+                failures++
+                out.println("build: FAIL no /job/ segment in $buildUrl")
             }
-            check("console") {
-                val log = client.withProgressiveText(buildUrl) { reader, _ ->
-                    ConsoleLogReader(headCapChars = 1_000_000, tailCapChars = 100_000).read(reader)
+            else -> {
+                check("builds") {
+                    val builds = client.builds(rawPath)
+                    "${builds.size} build(s) of ${rawPath.joinToString("/")}"
                 }
-                "${log.totalLines} line(s), firstError=${log.firstErrorLine ?: "none"}"
-            }
-            optional("stage-view") {
-                client.wfapiDescribe(buildUrl)?.let { "wfapi/describe present" }
-            }
-            optional("test-report") {
-                client.testReport(buildUrl)?.let { "testReport present (${it.totalCount} tests)" }
+                check("console") {
+                    val log = client.withProgressiveText(buildUrl) { reader, _ ->
+                        ConsoleLogReader(headCapChars = 1_000_000, tailCapChars = 100_000).read(reader)
+                    }
+                    "${log.totalLines} line(s), firstError=${log.firstErrorLine ?: "none"}"
+                }
+                optional("stage-view") {
+                    client.wfapiDescribe(buildUrl)?.let { "wfapi/describe present" }
+                }
+                optional("test-report") {
+                    client.testReport(buildUrl)?.let { "testReport present (${it.totalCount} tests)" }
+                }
             }
         }
     } finally {
@@ -126,14 +142,20 @@ private fun run(args: Array<String>, env: Map<String, String>, out: PrintStream,
     return if (failures == 0) EXIT_OK else EXIT_FAILURE
 }
 
-/** `http://host/job/a/job/b/1/` -> `[a, b]`; the trailing build number is dropped. */
-private fun rawPathFromBuildUrl(buildUrl: String): List<String> {
-    val path = buildUrl.substringAfter("://", "").substringAfter('/', "").trim('/')
+/**
+ * `http://host/jenkins/job/a/job/feature%252Fx/1/` -> `[a, feature%2Fx]`.
+ *
+ * Anything before the first `job` segment is a context path and is skipped. Each name in a URL is
+ * Jenkins' raw `name` encoded once more, so it is decoded once - otherwise `feature%252Fx` would be
+ * encoded a third time on the way back out and 404.
+ */
+internal fun rawPathFromBuildUrl(buildUrl: String): List<String> {
+    val path = buildUrl.substringAfter("://", buildUrl).substringAfter('/', "").substringBefore('?').trim('/')
     val segments = path.split('/').filter { it.isNotEmpty() }
     val raw = ArrayList<String>()
-    var i = 0
+    var i = segments.indexOf("job").let { if (it < 0) segments.size else it }
     while (i + 1 < segments.size && segments[i] == "job") {
-        raw += segments[i + 1]
+        raw += JenkinsUrls.decodeSegment(segments[i + 1])
         i += 2
     }
     return raw
@@ -143,6 +165,9 @@ private fun option(args: Array<String>, prefix: String): String? =
     args.firstOrNull { it.startsWith(prefix) }?.substringAfter('=')?.takeIf { it.isNotBlank() }
 
 private const val DEFAULT_BASE = "http://localhost:18080"
+
+private const val VALID_JENKINSFILE =
+    "pipeline {\n  agent any\n  stages {\n    stage('x') {\n      steps {\n        echo 'hi'\n      }\n    }\n  }\n}\n"
 private const val EXIT_OK = 0
 private const val EXIT_FAILURE = 1
 private const val EXIT_USAGE = 2

@@ -777,4 +777,36 @@ class BuildsViewModelTest {
         assertTrue(state is ToolWindowState.Failed && !state.retryable, "was $state")
         assertEquals(0, fake.count)
     }
+
+    @Test
+    fun `cached rows painted at start are not the notification baseline`() {
+        // The cached list is from the last session; the live list shows build 1 finished since then.
+        // Announcing it on every IDE start is exactly what the baseline exists to prevent.
+        val announced = ArrayList<Int>()
+        val cached = ToolWindowState.Ready(
+            builds = listOf(dev.stagecraft.model.BuildRef("svc/main", listOf("svc", "main"), 0, "u/0/", BuildStatus.SUCCESS, 0, 0)),
+            job = testJob(listOf("svc", "main"), WORKFLOW_CLASS),
+            how = "",
+            versionWarning = null,
+            fromCache = true,
+        )
+        val live = cached.copy(
+            builds = listOf(dev.stagecraft.model.BuildRef("svc/main", listOf("svc", "main"), 1, "u/1/", BuildStatus.FAILURE, 0, 0)) + cached.builds,
+            fromCache = false,
+        )
+        val states = ArrayDeque(listOf<ToolWindowState>(live, live))
+        val model = BuildsViewModel(
+            object : BuildsLoader {
+                override fun load(state: StagecraftState, ctx: BranchContext) = states.removeFirst()
+                override fun snapshotForFirstPaint(state: StagecraftState, ctx: BranchContext) = cached
+            },
+            Executor { it.run() },
+        )
+        model.onBuildFinished = { announced += it.number }
+
+        model.paintFirst(configured(), ctx())
+        model.refresh(configured(), ctx())
+
+        assertEquals(emptyList(), announced)
+    }
 }

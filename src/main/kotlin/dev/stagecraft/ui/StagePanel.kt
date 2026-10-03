@@ -27,14 +27,15 @@ import javax.swing.JPanel
  * Timings are shown **only** where wfapi supplied them; on the console path a stage shows its line
  * count instead, and never a fabricated duration. The failed stage is selected before the user
  * clicks anything, and an inferred failure carries an "inferred" marker rather than being presented
- * as fact. Double-clicking a stage opens the log at that stage's first line when the line range is
- * known.
+ * as fact. A stage without a status says nothing rather than "ok": on the console path no stage has
+ * a status, and a guess must not be presented as one. Double-clicking a stage opens the log at that
+ * stage (found by its `[Pipeline] { (name)` line, so the stage-view path works too).
  */
 class StagePanel(
     private val project: Project,
     private val service: JenkinsService,
     private val build: BuildRef,
-    private val onOpenLog: (Int?) -> Unit,
+    private val onOpenLog: (StageRef) -> Unit,
 ) : JPanel(BorderLayout()), Disposable {
 
     private val model = CollectionListModel<StageRef>(arrayListOf())
@@ -102,7 +103,7 @@ class StagePanel(
 
     private fun openSelected() {
         val stage = list.selectedValue ?: return
-        onOpenLog(stage.firstLine)
+        onOpenLog(stage)
     }
 
     override fun dispose() = Unit
@@ -129,7 +130,8 @@ class StagePanel(
             stage.skippedReason != null -> "skipped"
             stage.status != null -> stage.status.lowercase().replace('_', ' ')
             failed -> "failed (inferred)"
-            else -> "ok"
+            // §9.3: the console carries no stage status. Saying "ok" here would be a guess shown as fact.
+            else -> ""
         }
         val detail = when {
             stage.durationMillis != null -> formatDuration(stage.durationMillis)

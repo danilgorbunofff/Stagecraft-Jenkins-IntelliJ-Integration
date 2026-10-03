@@ -8,37 +8,58 @@ import java.io.StringReader
  *
  * Jenkins logs of 100-500 MB exist and neither console endpoint takes a byte range, so the log
  * cannot be fetched "around the error": the reader streams the whole thing once and keeps the
- * **head** and a **rolling tail** (README §9.7). [text] is therefore not the whole log when
- * [truncated]; it is what the editor shows, with [TRUNCATION_MARKER] standing in for the dropped
- * middle.
+ * **head** and a **rolling tail** (README §9.7). When [truncated], [text] is head + one marker line
+ * + tail, and the dropped middle is exactly [droppedLines] whole lines: both cuts are snapped to line
+ * boundaries, so no line is shown half-cut and every line number maps exactly ([displayLine]).
  *
  * [firstErrorLine] is a line number in the **full** log, found while streaming, so it survives
- * truncation; [firstErrorOffset] is where that line (or, if it was dropped, the first error still
- * visible) sits in [text], which is what the editor scrolls to. [totalChars] and [totalLines]
- * describe the whole log.
+ * truncation; [firstErrorOffset] is where that line sits in [text], or null when it was in the
+ * dropped middle. [totalChars] and [totalLines] describe the whole log.
+ *
+ * [text] is assembled on demand rather than stored, so the log is held once, not twice.
  */
 data class ConsoleLog(
-    val text: String,
+    val head: String,
+    val tail: String,
     val totalChars: Long,
     val totalLines: Int,
     val firstErrorLine: Int?,
     val firstErrorText: String?,
     val truncated: Boolean,
-    val headChars: Long,
-    val tailChars: Long,
+    val droppedLines: Int = 0,
+    val droppedChars: Long = 0,
 ) {
 
-    /** Offset in [text] of the first error line still present, or null when none is. */
-    val firstErrorOffset: Int? by lazy {
-        var start = 0
-        while (start < text.length) {
-            val end = text.indexOf('\n', start).let { if (it < 0) text.length else it }
-            val line = text.substring(start, end)
-            if (ConsoleStages.isErrorLine(line)) return@lazy start
-            start = if (end >= text.length) text.length else end + 1
+    /** What the editor shows: the whole log, or head + marker + tail. */
+    val text: String get() = if (truncated) head + markerLine + tail else head + tail
+
+    val headChars: Long get() = head.length.toLong()
+    val tailChars: Long get() = tail.length.toLong()
+
+    /** Lines of [head] (whole lines only when truncated). */
+    val headLines: Int get() = if (truncated) countNewlines(head) else 0
+
+    /** The line standing in for the dropped middle; visible, so truncation is never silent. */
+    val markerLine: String get() = markerLine(droppedLines, droppedChars)
+
+    /** 0-based line in [text] of 1-based full-log line [originalLine], or null when it was dropped. */
+    fun displayLine(originalLine: Int): Int? {
+        if (originalLine < 1 || originalLine > totalLines) return null
+        if (!truncated) return originalLine - 1
+        val headLines = headLines
+        return when {
+            originalLine <= headLines -> originalLine - 1
+            originalLine > headLines + droppedLines -> originalLine - droppedLines // +1 marker, -1 base
+            else -> null
         }
-        null
     }
+
+    /** Offset in [text] of the first error line, or null when there is none or it was dropped. */
+    val firstErrorOffset: Int?
+        get() {
+            val line = firstErrorLine?.let(::displayLine) ?: return null
+            return lineStartOffset(text, line)
+        }
 
     /**
      * §9.7: truncation must be visible, never silent. `showing the first 20 MB and the last 2 MB of
@@ -52,11 +73,32 @@ data class ConsoleLog(
     }
 
     companion object {
-        /** The line that stands in for the dropped middle; visible, so truncation is never silent. */
-        const val TRUNCATION_MARKER = "\n\u2026 Stagecraft dropped the middle of this log \u2026\n"
+        /**
+         * How every marker line starts. ASCII on purpose: one non-Latin-1 character (the `…` this
+         * used to contain) makes the JVM store the whole 22 M-character log at two bytes per char.
+         */
+        const val TRUNCATION_MARKER = "[... Stagecraft dropped "
 
-        /** One character of marker line plus the marker text; used to keep offsets honest. */
+        fun markerLine(droppedLines: Int, droppedChars: Long): String =
+            "$TRUNCATION_MARKER$droppedLines lines (${megabytes(droppedChars)}) from the middle of " +
+                "this log; open it in Jenkins for the rest ...]\n"
+
         fun megabytes(chars: Long): String = "%.1f MB".format(chars / 1_048_576.0)
+
+        internal fun countNewlines(text: CharSequence): Int {
+            var count = 0
+            for (i in text.indices) if (text[i] == '\n') count++
+            return count
+        }
+
+        internal fun lineStartOffset(text: CharSequence, line: Int): Int? {
+            if (line == 0) return 0
+            var seen = 0
+            for (i in text.indices) {
+                if (text[i] == '\n' && ++seen == line) return if (i + 1 <= text.length) i + 1 else null
+            }
+            return null
+        }
     }
 }
 
@@ -95,10 +137,12 @@ class ConsoleLogReader(
         var firstErrorText: String? = null
         val currentLine = StringBuilder()
         var pendingCr = false
+        var lastWasPartial = false
 
         fun consume(c: Char) {
             totalChars++
             if (head.length < headCapChars) head.append(c) else tail.add(c)
+            lastWasPartial = c != '\n'
             if (c == '\n') {
                 if (firstErrorLine == null) {
                     val line = currentLine.toString()
@@ -114,7 +158,7 @@ class ConsoleLogReader(
             }
         }
 
-        val stripper = if (stripNotes) NoteStripper() else null
+        val stripper = if (stripNotes) NoteStripper(::consume) else null
         val buffer = CharArray(COPY_BUFFER_CHARS)
         while (true) {
             val read = reader.read(buffer)
@@ -132,19 +176,14 @@ class ConsoleLogReader(
                 } else {
                     c
                 }
-                if (stripper != null) {
-                    val display = stripper.accept(emitted)
-                    var j = 0
-                    while (j < display.length) consume(display[j++])
-                } else {
-                    consume(emitted)
-                }
+                if (stripper != null) stripper.accept(emitted) else consume(emitted)
             }
         }
+        stripper?.finish()
 
         // A log that does not end in a newline still has a last line worth scanning.
         var totalLines = lineNumber - 1
-        if (currentLine.isNotEmpty()) {
+        if (currentLine.isNotEmpty() || lastWasPartial) {
             if (firstErrorLine == null) {
                 val line = currentLine.toString()
                 if (isError(line)) {
@@ -156,20 +195,37 @@ class ConsoleLogReader(
         }
 
         val truncated = totalChars > headCapChars.toLong() + tailCapChars
-        val text = if (truncated) {
-            head.toString() + ConsoleLog.TRUNCATION_MARKER + tail.toString()
-        } else {
-            head.toString() + tail.toString()
+        if (!truncated) {
+            return ConsoleLog(
+                head = head.toString() + tail.toString(),
+                tail = "",
+                totalChars = totalChars,
+                totalLines = totalLines,
+                firstErrorLine = firstErrorLine,
+                firstErrorText = firstErrorText,
+                truncated = false,
+            )
         }
+
+        // Snap both cuts to line boundaries: the head keeps whole lines only, the tail starts at the
+        // first whole line in the ring. What falls between is the dropped middle, in whole lines.
+        val headEnd = head.lastIndexOf("\n").let { if (it < 0) 0 else it + 1 }
+        val headText = head.substring(0, headEnd)
+        val ring = tail.toString()
+        val tailStart = ring.indexOf('\n').let { if (it < 0 || it + 1 >= ring.length) 0 else it + 1 }
+        val tailText = ring.substring(tailStart)
+        val headLines = ConsoleLog.countNewlines(headText)
+        val tailLines = ConsoleLog.countNewlines(tailText) + if (tailText.isNotEmpty() && !tailText.endsWith('\n')) 1 else 0
         return ConsoleLog(
-            text = text,
+            head = headText,
+            tail = tailText,
             totalChars = totalChars,
             totalLines = totalLines,
             firstErrorLine = firstErrorLine,
             firstErrorText = firstErrorText,
-            truncated = truncated,
-            headChars = minOf(totalChars, headCapChars.toLong()),
-            tailChars = if (truncated) tail.length.toLong() else maxOf(0L, totalChars - headCapChars),
+            truncated = true,
+            droppedLines = (totalLines - headLines - tailLines).coerceAtLeast(0),
+            droppedChars = totalChars - headText.length - tailText.length,
         )
     }
 
@@ -190,17 +246,27 @@ class ConsoleLogReader(
  *
  * [ConsoleText.stripNotes] does this for a whole string; this does it incrementally, holding back a
  * partial preamble so a note split across two read buffers is not leaked and a line is never cut
- * mid-escape. An unterminated note or a trailing partial preamble at the end of the stream is
- * dropped, exactly as the string version does.
+ * mid-escape. Characters go straight to [sink] - no per-character allocation, which on a 50 MB log
+ * was most of the read time.
+ *
+ * A note is base64 and never spans a line, so a newline inside one means the preamble was literal
+ * text, not a note: the note is abandoned and the newline kept, rather than swallowing the rest of
+ * the log. At the end of the stream a held-back partial preamble is emitted as the text it was.
  */
-internal class NoteStripper {
-    private val pending = StringBuilder()
+internal class NoteStripper(private val sink: (Char) -> Unit) {
+    private val pending = CharArray(PREAMBLE.length)
+    private var pendingLength = 0
     private var inNote = false
     private var epilogueMatch = 0
 
-    /** Feed one character; returns the display characters it produced (possibly empty). */
-    fun accept(c: Char): String {
+    fun accept(c: Char) {
         if (inNote) {
+            if (c == '\n') {
+                inNote = false
+                epilogueMatch = 0
+                sink(c)
+                return
+            }
             if (c == EPILOGUE[epilogueMatch]) {
                 epilogueMatch++
                 if (epilogueMatch == EPILOGUE.length) {
@@ -210,21 +276,35 @@ internal class NoteStripper {
             } else {
                 epilogueMatch = if (c == EPILOGUE[0]) 1 else 0
             }
-            return ""
+            return
         }
 
-        pending.append(c)
-        val out = StringBuilder()
-        while (pending.isNotEmpty() && !PREAMBLE.startsWith(pending.toString())) {
-            out.append(pending[0])
-            pending.deleteCharAt(0)
+        if (pendingLength == 0 && c != PREAMBLE[0]) {
+            sink(c) // the common case: plain text, nothing held back
+            return
         }
-        if (pending.length == PREAMBLE.length) {
-            pending.setLength(0)
+        pending[pendingLength++] = c
+        while (pendingLength > 0 && !pendingIsPreamblePrefix()) {
+            sink(pending[0])
+            System.arraycopy(pending, 1, pending, 0, pendingLength - 1)
+            pendingLength--
+        }
+        if (pendingLength == PREAMBLE.length) {
+            pendingLength = 0
             inNote = true
             epilogueMatch = 0
         }
-        return out.toString()
+    }
+
+    /** End of stream: a partial preamble was literal text after all. An open note is dropped. */
+    fun finish() {
+        for (i in 0 until pendingLength) sink(pending[i])
+        pendingLength = 0
+    }
+
+    private fun pendingIsPreamblePrefix(): Boolean {
+        for (i in 0 until pendingLength) if (pending[i] != PREAMBLE[i]) return false
+        return true
     }
 
     private companion object {

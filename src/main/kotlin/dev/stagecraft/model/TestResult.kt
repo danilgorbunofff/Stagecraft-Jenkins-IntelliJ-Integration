@@ -4,8 +4,8 @@ package dev.stagecraft.model
  * One test case from `{build}/testReport/api/json` (§9.6).
  *
  * [enclosingBlockNames] is Jenkins' own mapping of the test to the stage that ran it (Day-0 fixture
- * `11.testreport.json`: `["Deploy to staging"]`). It is used for the per-stage `[tests: …]` badge and
- * there is deliberately nothing matched client-side - Jenkins already knows.
+ * `11.testreport.json`: `["Deploy to staging"]`). The tests panel shows it next to each test as
+ * `[stage]`, and there is deliberately nothing matched client-side - Jenkins already knows.
  */
 data class TestCase(
     val name: String,

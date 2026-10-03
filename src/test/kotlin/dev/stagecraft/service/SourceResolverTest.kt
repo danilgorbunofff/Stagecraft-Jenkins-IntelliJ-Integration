@@ -63,4 +63,36 @@ class SourceResolverTest {
 
         assertEquals("src/main/java/com/company/OrderService.java", location?.path)
     }
+
+    // ---------------------------------------------------------------- audit regressions
+
+    private val absoluteProject = listOf(
+        "/Users/me/svc/src/main/java/com/company/OrderService.java",
+        "/Users/me/svc/src/main/kotlin/order/Socket.kt",
+        "/Users/me/svc/web/src/app.ts",
+    )
+
+    @Test
+    fun `an agent-side absolute path resolves by its shared suffix`() {
+        val maven = StackFrames.find("[ERROR] /var/jenkins/ws/svc/src/main/java/com/company/OrderService.java:[214,8] boom").single()
+        val windows = StackFrames.find("[ERROR] C:\\agent\\ws\\svc\\src\\main\\java\\com\\company\\OrderService.java:[214,8] boom").single()
+
+        assertEquals(absoluteProject[0], SuffixSourceResolver(absoluteProject).resolve(maven)?.path)
+        assertEquals(absoluteProject[0], SuffixSourceResolver(absoluteProject).resolve(windows)?.path)
+    }
+
+    @Test
+    fun `a kotlin file in a directory without the root package still resolves`() {
+        // package com.company.order, filed under src/main/kotlin/order/ (Kotlin's recommended layout)
+        val frame = StackFrames.find("\tat com.company.order.Socket.open(Socket.kt:12)").single()
+
+        assertEquals(absoluteProject[1], SuffixSourceResolver(absoluteProject).resolve(frame)?.path)
+    }
+
+    @Test
+    fun `a shared file name with no shared directory does not count as a segment match`() {
+        val frame = StackFrames.find("[ERROR] /agent/MyOrderService.java:[1,1] x").single()
+
+        assertNull(SuffixSourceResolver(absoluteProject).resolve(frame))
+    }
 }

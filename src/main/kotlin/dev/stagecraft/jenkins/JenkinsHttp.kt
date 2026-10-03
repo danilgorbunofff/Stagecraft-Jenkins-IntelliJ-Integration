@@ -117,6 +117,12 @@ fun interface HttpTransport {
     fun executeStreaming(request: HttpRequest): StreamingResponse = execute(request).toStreaming()
 
     fun close() {}
+
+    /**
+     * Abort whatever request [thread] has on the wire, so a user's Cancel frees that thread instead
+     * of leaving it blocked until the read timeout (§15.5). A no-op for transports without sockets.
+     */
+    fun abort(thread: Thread) {}
 }
 
 /**
@@ -136,12 +142,17 @@ class CookieJar {
 
     private val cookies = LinkedHashMap<String, Entry>()
 
-    val size: Int get() = cookies.size
+    // One jar serves every thread that uses its client (the build list, a log read, a lint POST),
+    // so every access is synchronized.
+    val size: Int @Synchronized get() = cookies.size
 
+    @Synchronized
     fun names(): Set<String> = cookies.keys.toSet()
 
+    @Synchronized
     fun clear() = cookies.clear()
 
+    @Synchronized
     fun store(setCookieHeaders: List<String>, nowMillis: Long = System.currentTimeMillis()) {
         for (raw in setCookieHeaders) {
             val parts = raw.split(';')
@@ -171,6 +182,7 @@ class CookieJar {
     }
 
     /** The `Cookie` header for a request to [path], or `null` when the jar is empty. */
+    @Synchronized
     fun headerValueFor(path: String): String? {
         val applicable = cookies.entries.filter { path.startsWith(it.value.path) }
         if (applicable.isEmpty()) return null
@@ -214,12 +226,13 @@ class UrlConnectionTransport(
             write(connection, request)
             val status = connection.responseCode
             val entries = headerEntries(connection)
-            cookieJar.store(connection.headerFields["Set-Cookie"].orEmpty())
+            cookieJar.store(setCookies(entries))
             val stream = if (status >= 400) connection.errorStream else connection.inputStream
             return HttpResponse(status, entries, stream?.use { it.readBytes() } ?: ByteArray(0))
         } catch (e: IOException) {
             throw JenkinsException.Transport("${request.method} ${request.url} failed: ${e.message}", e)
         } finally {
+            active.remove(Thread.currentThread(), connection)
             connection.disconnect()
         }
     }
@@ -230,16 +243,39 @@ class UrlConnectionTransport(
             write(connection, request)
             val status = connection.responseCode
             val entries = headerEntries(connection)
-            cookieJar.store(connection.headerFields["Set-Cookie"].orEmpty())
+            cookieJar.store(setCookies(entries))
             val stream = if (status >= 400) connection.errorStream else connection.inputStream
+            val owner = Thread.currentThread()
             return StreamingResponse(status, entries, stream ?: ByteArray(0).inputStream()) {
+                active.remove(owner, connection)
                 connection.disconnect()
             }
         } catch (e: IOException) {
+            active.remove(Thread.currentThread(), connection)
             connection.disconnect()
             throw JenkinsException.Transport("${request.method} ${request.url} failed: ${e.message}", e)
         }
     }
+
+    /** The connection each thread has open, so [abort] can close the one a Cancel is aimed at. */
+    private val active = java.util.concurrent.ConcurrentHashMap<Thread, HttpURLConnection>()
+
+    /**
+     * Closes [thread]'s connection. A blocked read fails at once with an `IOException`, which the
+     * caller sees as a [JenkinsException.Transport]. A connect still in progress is not interruptible
+     * this way and ends at the 5 s connect timeout instead.
+     */
+    override fun abort(thread: Thread) {
+        active.remove(thread)?.disconnect()
+    }
+
+    /**
+     * `Set-Cookie` headers, whatever their case. `HttpURLConnection.headerFields` is a plain map keyed
+     * by the spelling on the wire, and a proxy that lower-cases headers (Envoy, Istio) would otherwise
+     * hide the session cookie - and with it every password-auth POST's crumb.
+     */
+    private fun setCookies(entries: List<Pair<String, String>>): List<String> =
+        entries.filter { it.first.equals("Set-Cookie", ignoreCase = true) }.map { it.second }
 
     private fun open(request: HttpRequest): HttpURLConnection {
         val uri = try {
@@ -271,6 +307,7 @@ class UrlConnectionTransport(
         if (sslContext != null && connection is HttpsURLConnection) {
             connection.sslSocketFactory = sslContext.socketFactory
         }
+        active[Thread.currentThread()] = connection
         return connection
     }
 
@@ -354,12 +391,17 @@ class JenkinsHttp(
         ?: UrlConnectionTransport(proxySelector, sslContext, connectTimeoutMillis, readTimeoutMillis, cookieJar)
 
     /** Filled in from the `X-Jenkins` header of the first response we see. */
+    @Volatile
     var lastJenkinsVersion: JenkinsVersion? = null
         private set
 
+    private val requests = java.util.concurrent.atomic.AtomicInteger()
+
     /** Counted so tests can assert that a rule like "refetch once" really is once. */
-    var requestCount: Int = 0
-        private set
+    val requestCount: Int get() = requests.get()
+
+    /** Abort the request [thread] has in flight on this server (a user's Cancel, §15.5). */
+    fun abortRequestsOn(thread: Thread) = transport.abort(thread)
 
     fun get(path: String, extraHeaders: Map<String, String> = emptyMap()): HttpResponse =
         send("GET", resolve(path), null, extraHeaders)
@@ -370,7 +412,7 @@ class JenkinsHttp(
     /** A GET whose body is read from the wire rather than buffered. Used for consoles (§9.7). */
     fun stream(path: String): StreamingResponse {
         val request = buildRequest("GET", resolve(path), null, emptyMap())
-        requestCount++
+        requests.incrementAndGet()
         val response = transport.executeStreaming(request)
         remember(response.headerEntries)
         return response
@@ -397,7 +439,7 @@ class JenkinsHttp(
     }
 
     private fun execute(request: HttpRequest): HttpResponse {
-        requestCount++
+        requests.incrementAndGet()
         val response = transport.execute(request)
         remember(response.headerEntries)
         return response
@@ -423,6 +465,8 @@ class JenkinsHttp(
      * Make sure the crumb cache holds an answer, fetching it if not. A 404 is an answer: CSRF is
      * switched off on this server and we must never ask again.
      */
+    // Synchronized so two threads posting at once fetch the crumb once, not twice.
+    @Synchronized
     private fun ensureCrumb() {
         val cache = auth.crumbCache
         if (cache.isLoaded) return
@@ -436,7 +480,7 @@ class JenkinsHttp(
             ),
             null,
         )
-        requestCount++
+        requests.incrementAndGet()
         val response = transport.execute(request)
         remember(response.headerEntries)
         when {

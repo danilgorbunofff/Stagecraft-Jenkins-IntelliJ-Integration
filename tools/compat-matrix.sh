@@ -40,7 +40,9 @@ while IFS=$'\t' read -r name base build; do
   echo "=== cell: ${name} (${base}) ==="
   args="--base=${base}"
   [[ -n "${build// }" ]] && args="${args} --build=${build}"
-  if ./gradlew --quiet compatProbe --args="${args}"; then
+  # </dev/null: the compatProbe task forwards stdin, and gradle would otherwise swallow the rest of
+  # the cells file this loop is reading - running only the first cell.
+  if ./gradlew --quiet compatProbe --args="${args}" </dev/null; then
     echo "--- ${name}: PASS"
   else
     echo "--- ${name}: FAIL"

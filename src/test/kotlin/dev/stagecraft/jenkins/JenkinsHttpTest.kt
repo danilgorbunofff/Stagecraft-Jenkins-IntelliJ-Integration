@@ -264,4 +264,67 @@ class JenkinsHttpTest {
             server.stop(0)
         }
     }
+
+    @Test
+    fun `a lower-cased set-cookie header still keeps the session`() {
+        // Envoy/Istio lower-case response headers; the session cookie carries a password crumb.
+        val server = java.net.ServerSocket(0, 0, java.net.InetAddress.getByName("127.0.0.1"))
+        val thread = Thread {
+            server.accept().use { socket ->
+                socket.getInputStream().read(ByteArray(4096))
+                socket.getOutputStream().write(
+                    "HTTP/1.1 200 OK\r\nset-cookie: JSESSIONID.abc=s1; Path=/\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".toByteArray(),
+                )
+            }
+        }.apply { start() }
+        try {
+            val jar = CookieJar()
+            UrlConnectionTransport(cookieJar = jar).execute(HttpRequest("GET", "http://127.0.0.1:${server.localPort}/x"))
+
+            assertEquals(setOf("JSESSIONID.abc"), jar.names())
+        } finally {
+            thread.join(2_000)
+            server.close()
+        }
+    }
+
+    @Test
+    fun `a cancel aborts the request a thread is blocked in`() {
+        // The server accepts and never answers: without an abort the read waits the full 20 s.
+        val server = java.net.ServerSocket(0, 0, java.net.InetAddress.getByName("127.0.0.1"))
+        val accepted = java.util.concurrent.CountDownLatch(1)
+        val acceptor = Thread {
+            val socket = server.accept()
+            accepted.countDown()
+            try {
+                Thread.sleep(10_000)
+            } catch (_: InterruptedException) {
+                // the test is over
+            }
+            socket.close()
+        }.apply { isDaemon = true; start() }
+        val http = JenkinsHttp(
+            "http://127.0.0.1:${server.localPort}/",
+            JenkinsAuth(JenkinsCredential.ApiToken("admin", "token")),
+            transport = UrlConnectionTransport(),
+        )
+        var failure: Throwable? = null
+        val started = System.nanoTime()
+        val loader = Thread { failure = runCatching { http.get("me/api/json") }.exceptionOrNull() }.apply { start() }
+        try {
+            accepted.await(2, java.util.concurrent.TimeUnit.SECONDS)
+            Thread.sleep(200)
+
+            http.abortRequestsOn(loader)
+            loader.join(3_000)
+
+            val millis = (System.nanoTime() - started) / 1_000_000
+            assertFalse(loader.isAlive, "still blocked after the abort")
+            assertTrue(millis < 3_000, "took $millis ms")
+            assertTrue(failure is JenkinsException.Transport, "was $failure")
+        } finally {
+            acceptor.interrupt()
+            server.close()
+        }
+    }
 }

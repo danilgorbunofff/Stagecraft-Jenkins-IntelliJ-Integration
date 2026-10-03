@@ -35,7 +35,25 @@ class LintClient(private val client: JenkinsClient) {
 
     fun validate(jenkinsfile: String): LintResult {
         val text = client.postForm(PATH, mapOf(FIELD to jenkinsfile))
+        if (looksLikeHtml(text)) {
+            // A 200 web page is not a lint verdict: a login page, a proxy's page, or a Jenkins
+            // without the declarative pipeline plugin. Say so instead of showing raw markup.
+            val title = Regex("<title>(.*?)</title>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+                .find(text)?.groupValues?.get(1)?.trim()
+            return LintResult(
+                valid = false,
+                message = "Jenkins answered with a web page instead of a lint result" +
+                    (title?.let { " (\"$it\")" }.orEmpty()) + ".\n" +
+                    "The Pipeline: Declarative plugin (pipeline-model-definition) may be missing, or a " +
+                    "login or proxy page answered in its place.",
+            )
+        }
         return LintResult(valid = text.trimStart().startsWith(SUCCESS_PREFIX), message = text)
+    }
+
+    private fun looksLikeHtml(text: String): Boolean {
+        val start = text.trimStart().take(200).lowercase()
+        return start.startsWith("<!doctype html") || start.startsWith("<html")
     }
 
     companion object {

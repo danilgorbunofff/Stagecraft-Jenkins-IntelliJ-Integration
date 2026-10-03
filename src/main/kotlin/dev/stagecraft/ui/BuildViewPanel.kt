@@ -28,16 +28,20 @@ class BuildViewPanel(
 
     private val tabs = JTabbedPane()
     private val log = LogEditorPanel(project, service, build, isShowing)
-    private val stages = StagePanel(project, service, build) { line ->
+    private val stages = StagePanel(project, service, build) { stage ->
         tabs.selectedComponent = log
-        log.scrollToLine(line)
+        log.scrollToStage(stage.name, stage.firstLine)
     }
     private val tests = TestResultsPanel(project, service, build)
     private val rebuild = JButton("Rebuild")
 
     init {
-        // §7.4: rebuild where the server allows it. The result is reported honestly - a 403 is
-        // "this account is not allowed", not a silent failure.
+        // §7.4: rebuild only where the server allows it - hidden until the job is known to be
+        // buildable (a disabled job is not) - and re-run with the parameters this build used. Every
+        // refusal is reported as what it is.
+        rebuild.isVisible = false
+        rebuild.toolTipText = "Run this job again, with the parameters this build used"
+        service.canRebuild(build) { result -> rebuild.isVisible = result.getOrDefault(false) }
         rebuild.addActionListener {
             rebuild.isEnabled = false
             service.triggerBuild(build) { result ->
