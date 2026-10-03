@@ -11,7 +11,9 @@ import com.intellij.util.net.HttpConfigurable
 import com.intellij.util.net.ssl.CertificateManager
 import dev.stagecraft.jenkins.ConsoleLog
 import dev.stagecraft.jenkins.ConsoleLogReader
+import dev.stagecraft.jenkins.ConsoleStages
 import dev.stagecraft.jenkins.ConsoleTailer
+import dev.stagecraft.jenkins.StageView
 import dev.stagecraft.jenkins.JenkinsAuth
 import dev.stagecraft.jenkins.JenkinsClient
 import dev.stagecraft.jenkins.JenkinsCredential
@@ -19,6 +21,7 @@ import dev.stagecraft.jenkins.JenkinsUrls
 import dev.stagecraft.jenkins.TailDelta
 import dev.stagecraft.jenkins.UrlConnectionTransport
 import dev.stagecraft.model.BuildRef
+import dev.stagecraft.model.TestReport
 import java.io.File
 import java.net.ProxySelector
 import java.util.concurrent.ExecutorService
@@ -217,6 +220,36 @@ class JenkinsService(private val project: Project) : Disposable {
     /** The log tab is closing: drop the cursor so a reopened tab starts clean. */
     fun stopTailing(build: BuildRef) {
         io.execute { consoleTailers.remove(build.url) }
+    }
+
+    /**
+     * §9.3 fallback chain, off the EDT: wfapi first (real statuses and timings), console parse
+     * second (exact boundaries, no status). A 404 from wfapi is the normal "no stage view" answer,
+     * not an error.
+     */
+    fun readStages(build: BuildRef, onDone: (Result<StageView>) -> Unit) {
+        io.execute {
+            val result = runCatching {
+                val client = currentClientOrNull()
+                    ?: error("Stagecraft is not configured, so it cannot read stages.")
+                val wfapi = client.wfapiDescribe(build.url)
+                StageView.fromWfapi(wfapi ?: kotlinx.serialization.json.JsonObject(emptyMap()))
+                    ?: StageView.fromConsole(ConsoleStages.parse(client.consoleText(build.url)))
+            }
+            post(onDone, result)
+        }
+    }
+
+    /** §9.6: the build's test report, or null when it published none. Off the EDT. */
+    fun readTests(build: BuildRef, onDone: (Result<TestReport?>) -> Unit) {
+        io.execute {
+            val result = runCatching {
+                val client = currentClientOrNull()
+                    ?: error("Stagecraft is not configured, so it cannot read tests.")
+                client.testReport(build.url)
+            }
+            post(onDone, result)
+        }
     }
 
     private fun <T> post(onDone: (Result<T>) -> Unit, result: Result<T>) {

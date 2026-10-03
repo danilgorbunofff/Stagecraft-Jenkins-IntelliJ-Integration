@@ -8,6 +8,8 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -484,6 +486,54 @@ class JenkinsClientTest {
         fake.onGet(mainBuildUrl + "consoleText", Fixtures.json("08.console-main.txt"))
 
         assertFailsWith<JenkinsException.Malformed> { client(fake).consoleText(mainBuildUrl, maxBytes = 100) }
+    }
+
+    @Test
+    fun `wfapi describe parses stages when the stage view is present`() {
+        val fake = FakeTransport()
+        fake.onGet(mainBuildUrl + "wfapi/describe", Fixtures.json("12.wfapi.json"))
+
+        val describe = client(fake).wfapiDescribe(mainBuildUrl)
+
+        assertNotNull(describe)
+        assertEquals(4, describe.arr("stages")!!.size)
+    }
+
+    @Test
+    fun `wfapi describe is null, not an error, without the stage view`() {
+        // Re-check R10 check 12: a server without pipeline-stage-view 404s wfapi/describe. That is
+        // the normal "stage view unavailable" answer that sends the caller to the console parser.
+        val fake = FakeTransport()
+        fake.onGet(mainBuildUrl + "wfapi/describe", Fixtures.empty(404))
+
+        assertNull(client(fake).wfapiDescribe(mainBuildUrl))
+    }
+
+    @Test
+    fun `a test report is parsed with counts, stages and stack traces`() {
+        val fake = FakeTransport()
+        fake.onGet(mainBuildUrl + "testReport/api/json", Fixtures.json("11.testreport.json"))
+
+        val report = client(fake).testReport(mainBuildUrl)
+
+        assertNotNull(report)
+        assertEquals(1, report.failCount)
+        assertEquals(2, report.passCount)
+        assertEquals(3, report.totalCount)
+        val failed = report.failedCases.single()
+        assertEquals("computeTotals", failed.name)
+        assertEquals("com.company.OrderServiceTest", failed.className)
+        assertEquals(listOf("Deploy to staging"), failed.enclosingBlockNames)
+        assertEquals(51L, failed.durationMillis)
+        assertTrue(failed.errorStackTrace!!.contains("OrderService.java:214"))
+    }
+
+    @Test
+    fun `a missing test report is null, not an error`() {
+        val fake = FakeTransport()
+        fake.onGet(mainBuildUrl + "testReport/api/json", Fixtures.empty(404))
+
+        assertNull(client(fake).testReport(mainBuildUrl))
     }
 
     @Test

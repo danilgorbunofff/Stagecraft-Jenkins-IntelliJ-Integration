@@ -34,15 +34,15 @@ class BuildsToolWindowFactory : ToolWindowFactory {
     }
 
     /**
-     * Open a build's log as its own tool window tab. The tab owns a [LogEditorPanel], which owns the
-     * editor and the tail poller; closing the tab disposes all three, so a log that is no longer on
-     * screen stops polling (§9.5: "stop immediately if the tool window closes").
+     * Open a build as its own tool window tab: stages, log and tests. The tab owns a
+     * [BuildViewPanel]; closing it disposes the log editor and the tail poller, so a log that is no
+     * longer on screen stops polling (§9.5: "stop immediately if the tool window closes").
      */
     private fun openLog(project: Project, service: JenkinsService, toolWindow: ToolWindow, build: BuildRef) {
-        val logPanel = LogEditorPanel(project, service, build) { toolWindow.isVisible }
+        val buildView = BuildViewPanel(project, service, build) { toolWindow.isVisible }
         val content = ContentFactory.getInstance()
-            .createContent(logPanel, "Log ${build.displayName}", true)
-        content.setDisposer(logPanel)
+            .createContent(buildView, "${build.jobFullName} ${build.displayName}", true)
+        content.setDisposer(buildView)
         toolWindow.contentManager.addContent(content)
         toolWindow.contentManager.setSelectedContent(content)
     }

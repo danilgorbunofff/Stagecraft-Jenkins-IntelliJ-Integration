@@ -7,12 +7,16 @@ import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.ScrollType
+import com.intellij.openapi.editor.event.EditorMouseEvent
+import com.intellij.openapi.editor.event.EditorMouseListener
+import com.intellij.openapi.editor.markup.EffectType
 import com.intellij.openapi.editor.markup.HighlighterLayer
 import com.intellij.openapi.editor.markup.HighlighterTargetArea
 import com.intellij.openapi.editor.markup.TextAttributes
 import com.intellij.openapi.fileTypes.PlainTextFileType
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.TextRange
+import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBLabel
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
@@ -20,6 +24,8 @@ import dev.stagecraft.jenkins.ConsoleLog
 import dev.stagecraft.jenkins.ConsoleStages
 import dev.stagecraft.jenkins.LogFilter
 import dev.stagecraft.jenkins.LogFilterMode
+import dev.stagecraft.jenkins.StackFrame
+import dev.stagecraft.jenkins.StackFrames
 import dev.stagecraft.jenkins.TailDelta
 import dev.stagecraft.model.BuildRef
 import dev.stagecraft.service.ConsoleRead
@@ -80,6 +86,9 @@ class LogEditorPanel(
     /** Only the first few thousand stripes: an editor with a highlighter per line is unusable. */
     private var stripes = 0
 
+    /** The stack frames currently underlined, so a Ctrl-click can be mapped to one by offset. */
+    private var hyperlinkFrames: List<StackFrame> = emptyList()
+
     init {
         status.foreground = UIUtil.getInactiveTextColor()
         banner.foreground = UIUtil.getErrorForeground()
@@ -105,8 +114,31 @@ class LogEditorPanel(
         add(editor.component, BorderLayout.CENTER)
         add(status, BorderLayout.SOUTH)
 
+        // §9.6: Ctrl/Cmd-click on a stack frame opens its source line, or does nothing when the file
+        // is not in the project. Underlines are added with the other decorations.
+        editor.addEditorMouseListener(object : EditorMouseListener {
+            override fun mouseClicked(event: EditorMouseEvent) {
+                val awt = event.mouseEvent
+                if (!(awt.isControlDown || awt.isMetaDown)) return
+                val offset = event.offset
+                val frame = hyperlinkFrames.firstOrNull { offset >= it.start && offset < it.end } ?: return
+                SourceNavigator.navigate(project, frame)
+            }
+        })
+
         status.text = "Loading the console of ${build.displayName}…"
         service.readConsole(build) { result -> result.fold(::showLog, ::showFailure) }
+    }
+
+    /** Scroll the editor to a 1-based line, used when a stage is clicked. */
+    fun scrollToLine(line: Int?) {
+        if (line == null || line <= 0) return
+        ApplicationManager.getApplication().invokeLater {
+            val last = maxOf(0, document.lineCount - 1)
+            val offset = document.getLineStartOffset((line - 1).coerceIn(0, last))
+            editor.caretModel.moveToOffset(offset)
+            editor.scrollingModel.scrollToCaret(ScrollType.CENTER)
+        }
     }
 
     private fun showLog(read: ConsoleRead) {
@@ -144,6 +176,7 @@ class LogEditorPanel(
         )
         WriteCommandAction.runWriteCommandAction(project) { document.setText(text) }
         applyStripes()
+        applyHyperlinks(text)
         val lines = log?.totalLines ?: document.lineCount
         val error = log?.firstErrorLine
         status.text = listOfNotNull(
@@ -177,6 +210,33 @@ class LogEditorPanel(
             stripes++
         }
     }
+
+    /**
+     * §9.6: underline every stack frame / compiler location in the current text. The offsets are
+     * into the same text the document holds, so a click maps straight back. Capped so a pathological
+     * log cannot add an unbounded number of highlighters.
+     */
+    private fun applyHyperlinks(text: String) {
+        hyperlinkFrames = StackFrames.find(text, limit = MAX_HYPERLINKS)
+        val attributes = linkAttributes()
+        for (frame in hyperlinkFrames) {
+            editor.markupModel.addRangeHighlighter(
+                frame.start,
+                frame.end,
+                HighlighterLayer.SYNTAX,
+                attributes,
+                HighlighterTargetArea.EXACT_RANGE,
+            )
+        }
+    }
+
+    private fun linkAttributes(): TextAttributes = TextAttributes(
+        null,
+        null,
+        JBColor.BLUE,
+        EffectType.LINE_UNDERSCORE,
+        Font.PLAIN,
+    )
 
     private fun errorAttributes(): TextAttributes = TextAttributes(
         null,
@@ -248,6 +308,7 @@ class LogEditorPanel(
         const val TAIL_PERIOD_MILLIS = 2_000L
 
         const val MAX_STRIPES = 5_000
+        const val MAX_HYPERLINKS = 1_000
         const val ALPHA = 40
 
         /** Theme-neutral amber, so the warning stripe reads on light and dark schemes alike. */

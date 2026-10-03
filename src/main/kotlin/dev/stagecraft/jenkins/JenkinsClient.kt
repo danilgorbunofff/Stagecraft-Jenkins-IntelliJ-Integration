@@ -4,6 +4,10 @@ import dev.stagecraft.model.BuildRef
 import dev.stagecraft.model.BuildStatus
 import dev.stagecraft.model.JobKind
 import dev.stagecraft.model.JobNode
+import dev.stagecraft.model.TestCase
+import dev.stagecraft.model.TestReport
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import java.io.InputStreamReader
 import java.io.OutputStream
 import java.io.Reader
@@ -300,6 +304,62 @@ class JenkinsClient(
     fun buildActions(buildUrl: String): List<kotlinx.serialization.json.JsonObject> {
         val url = buildApiJson(buildUrl, "actions[_class,remoteUrls,lastBuiltRevision[SHA1,branch[name]]]")
         return parseBody(url, http.get(url)).objects("actions")
+    }
+
+    /**
+     * `{build}/wfapi/describe`, or `null` when `pipeline-stage-view`/`pipeline-rest-api` is absent
+     * (§9.3). A 404 is the documented "stage view unavailable" answer (re-check R10, check 12), not
+     * an error: it is what sends the caller down the console-parse path.
+     */
+    fun wfapiDescribe(buildUrl: String): JsonObject? {
+        val url = buildScopedUrl(buildUrl, "wfapi/describe")
+        val response = http.get(url)
+        if (response.status == 404) return null
+        return parseBody(url, response)
+    }
+
+    /**
+     * `{build}/testReport/api/json`, or `null` when the build published no test report. Core
+     * Jenkins, no plugin needed (§9.6). A test's `duration` is fractional **seconds** in the
+     * payload; it is converted to milliseconds once, here.
+     */
+    fun testReport(buildUrl: String): TestReport? {
+        val url = buildScopedUrl(buildUrl, "testReport/api/json")
+        val response = http.get(url)
+        if (response.status == 404) return null
+        return parseTestReport(parseBody(url, response))
+    }
+
+    private fun parseTestReport(obj: JsonObject): TestReport {
+        val cases = ArrayList<TestCase>()
+        for (suite in obj.objects("suites")) {
+            val enclosing = suite.arr("enclosingBlockNames")
+                ?.mapNotNull { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content }
+                .orEmpty()
+            for (case in suite.objects("cases")) {
+                val name = case.str("name") ?: continue
+                cases += TestCase(
+                    name = name,
+                    className = case.str("className").orEmpty(),
+                    status = case.str("status") ?: "UNKNOWN",
+                    durationMillis = case.double("duration")?.let { (it * 1000).toLong() },
+                    errorDetails = case.str("errorDetails"),
+                    errorStackTrace = case.str("errorStackTrace"),
+                    enclosingBlockNames = enclosing,
+                )
+            }
+        }
+        val fail = obj.int("failCount") ?: cases.count { it.failed }
+        val skip = obj.int("skipCount") ?: cases.count { it.skipped }
+        val pass = obj.int("passCount") ?: (cases.size - fail - skip)
+        return TestReport(
+            totalCount = cases.size,
+            failCount = fail,
+            skipCount = skip,
+            passCount = pass,
+            durationMillis = obj.double("duration")?.let { (it * 1000).toLong() },
+            cases = cases,
+        )
     }
 
     private fun buildScopedUrl(buildUrl: String, suffix: String): String {
