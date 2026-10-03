@@ -10,6 +10,9 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.put
 import java.io.File
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 
 /**
@@ -32,7 +35,16 @@ class JobIndex private constructor(
     private val pins: Map<String, JobNode>,
 ) {
 
-    data class RankedJob(val job: JobNode, val tier: Int, val reason: String)
+    /**
+     * One candidate. [underOrg] is true when one of the job's ancestors is named like the remote's
+     * organisation - the shape an organisation folder gives every repository it scans - and it is
+     * what tells `alpha-org/api` from `zeta-org/api` when both are named exactly like the repository.
+     */
+    data class RankedJob(val job: JobNode, val tier: Int, val reason: String, val underOrg: Boolean = false) {
+
+        /** Two candidates the name evidence cannot tell apart. */
+        fun tiesWith(other: RankedJob): Boolean = tier == other.tier && underOrg == other.underOrg
+    }
 
     /**
      * Every job that could plausibly be [remote], best first (§9.4 step 2).
@@ -44,7 +56,8 @@ class JobIndex private constructor(
      *  * 60  — the job name contains the repository name.
      *  * 50  — the job name contains the organisation name (a guess, shown as one).
      *
-     * Ties inside a tier break by shallower [JobNode.depth], then name.
+     * Inside a tier, a job filed under a folder named like the organisation comes first; then ties
+     * break by shallower [JobNode.depth], then name.
      */
     fun rank(remote: RemoteInfo): List<RankedJob> {
         val candidates = ArrayList<RankedJob>()
@@ -58,15 +71,36 @@ class JobIndex private constructor(
                     TIER_CONTAINS_ORG
                 else -> 0
             }
-            if (tier > 0) candidates += RankedJob(job, tier, reasonFor(tier, remote, job))
+            if (tier > 0) candidates += RankedJob(job, tier, reasonFor(tier, remote, job), isUnderOrg(job, remote))
         }
         candidates.sortWith(
             compareByDescending<RankedJob> { it.tier }
+                .thenByDescending { it.underOrg }
                 .thenBy { it.job.depth }
                 .thenBy { it.job.displayName.lowercase() },
         )
         return candidates
     }
+
+    private fun isUnderOrg(job: JobNode, remote: RemoteInfo): Boolean {
+        if (remote.org.isEmpty()) return false
+        return job.rawPath.dropLast(1).any { JenkinsUrls.decodeSegment(it).equals(remote.org, ignoreCase = true) }
+    }
+
+    /**
+     * What to tell the user when the index is not the whole tree, or null when it is. Either the
+     * [DEFAULT_MAX_JOBS] cap cut it, or the folder tree went deeper than the walk was allowed to
+     * follow.
+     */
+    val truncationNote: String?
+        get() = when {
+            !truncated -> null
+            totalSeen > jobs.size ->
+                "The index holds ${jobs.size} of $totalSeen jobs; pin your job manually for an exact match."
+            else ->
+                "The index holds ${jobs.size} jobs, but the folder tree goes deeper than Stagecraft followed; " +
+                    "pin your job manually for an exact match."
+        }
 
     private fun reasonFor(tier: Int, remote: RemoteInfo, job: JobNode): String = when (tier) {
         TIER_MULTIBRANCH_NAME -> "the multibranch job \"${job.displayName}\" is named like the repository"
@@ -123,10 +157,11 @@ class JobIndex private constructor(
             nowMillis: Long = System.currentTimeMillis(),
             previous: JobIndex? = null,
         ): JobIndex {
-            val all = client.jobTree()
-            val truncated = all.size > maxJobs
+            val tree = client.jobTreeDeep(maxJobs)
+            val all = tree.jobs
+            val truncated = all.size > maxJobs || !tree.complete
             return JobIndex(
-                jobs = if (truncated) all.take(maxJobs) else all,
+                jobs = if (all.size > maxJobs) all.take(maxJobs) else all,
                 totalSeen = all.size,
                 truncated = truncated,
                 fetchedAtMillis = nowMillis,
@@ -153,16 +188,24 @@ class JobIndex private constructor(
         fun cacheFile(cacheDir: File, serverUrl: String): File =
             File(cacheDir, "stagecraft/index-${sha1Hex(serverUrl.trimEnd('/'))}.json")
 
+        /**
+         * Write through a temporary file and an atomic rename, so a reader - or a crash halfway
+         * through - only ever sees the old index or the new one, never half of one.
+         */
         fun save(cacheDir: File, index: JobIndex) {
             val file = cacheFile(cacheDir, index.serverUrl)
             val parent = file.parentFile
             if (!parent.isDirectory) parent.mkdirs()
-            val tmp = File(parent, file.name + ".tmp")
-            tmp.writeText(index.toJson().toString())
-            if (file.exists()) file.delete()
-            if (!tmp.renameTo(file)) {
+            val tmp = File.createTempFile(file.name, ".tmp", parent)
+            try {
+                tmp.writeText(index.toJson().toString())
+                try {
+                    Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+                } catch (_: AtomicMoveNotSupportedException) {
+                    Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                }
+            } finally {
                 tmp.delete()
-                throw IllegalStateException("could not move the job index into place at $file")
             }
         }
 
@@ -253,24 +296,27 @@ class JobIndex private constructor(
  *
  * A pin is a user decision (§9.4 step 5), so an empty index, a job created after the last refresh
  * or a tree cut off by [JobIndex.DEFAULT_MAX_JOBS] must not be able to drop it — but a name is all
- * we have. [name] is read in Jenkins' own path spelling: `/` separates levels and each level is
- * percent-encoded once, exactly as Jenkins reports `name`. Segments are normalised through a
- * decode/encode round trip, so a name the user copied out of Jenkins (`svc/feature%2FORD-214`) and
- * a decoded one are encoded exactly once rather than twice.
+ * we have. [name] is read in Jenkins' own path spelling, exactly as Jenkins reports `name` and as
+ * its full name shows it: `/` separates levels, a branch's own `/` is already `%2F`
+ * (`svc/feature%2FORD-214`), and every other character - a space, an accent - is kept as it is.
+ * Each level is therefore used verbatim; [JenkinsUrls.jobPath] does the one URL encoding. Running
+ * the levels through a decode/encode round trip instead would turn `My Folder` into `My%20Folder`
+ * and the URL into a 404.
  *
  * [JobNode.kind] stays [JobKind.OTHER]: nothing in a name says whether a job is a multibranch
  * container or a branch inside one, and guessing is the dishonesty the matcher exists to avoid.
  * The caller that knows more (the matcher, once it has a branch) builds the child path instead.
  */
-fun jobFromName(name: String, serverUrl: String = ""): JobNode {
-    val rawPath = name.trim().trim('/').split('/')
-        .filter { it.isNotEmpty() }
-        .map { JenkinsUrls.encodeSegment(JenkinsUrls.decodeSegment(it)) }
+fun jobFromName(name: String, serverUrl: String = ""): JobNode =
+    jobFromRawPath(name.trim().trim('/').split('/').map { it.trim() }.filter { it.isNotEmpty() }, serverUrl, name.trim())
+
+/** A [JobNode] for a raw path (Jenkins' `name` per level, root first) the index does not hold. */
+fun jobFromRawPath(rawPath: List<String>, serverUrl: String = "", fallbackName: String = ""): JobNode {
     val decoded = rawPath.map { JenkinsUrls.decodeSegment(it) }
     val base = if (serverUrl.isBlank()) "" else serverUrl.trimEnd('/') + "/"
     return JobNode(
-        name = rawPath.lastOrNull() ?: name.trim(),
-        displayName = decoded.lastOrNull() ?: name.trim(),
+        name = rawPath.lastOrNull() ?: fallbackName,
+        displayName = decoded.lastOrNull() ?: fallbackName,
         fullName = decoded.joinToString("/"),
         rawPath = rawPath,
         className = null,

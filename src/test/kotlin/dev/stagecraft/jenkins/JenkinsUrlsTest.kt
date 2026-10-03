@@ -141,4 +141,49 @@ class JenkinsUrlsTest {
             assertTrue(url.substringAfter("?tree=").none { it == '[' || it == ']' || it == ' ' })
         }
     }
+
+    // --------------------------------------------------------------- context paths (audit)
+
+    @Test
+    fun `a jenkins served under a context path keeps one context path, not two`() {
+        // Jenkins started with --prefix=/jenkins reports /jenkins/job/... in every url. The old
+        // rebase appended that path to a base that already ended in /jenkins/.
+        val base = "https://ci.example.com/jenkins/"
+
+        assertEquals(
+            "https://ci.example.com/jenkins/job/a/1/",
+            JenkinsUrls.rebase(base, "http://ci.internal:8080/jenkins/job/a/1/"),
+        )
+    }
+
+    @Test
+    fun `rebasing is idempotent`() {
+        val base = "https://ci.example.com/jenkins/"
+        val once = JenkinsUrls.rebase(base, "https://ci.example.com/jenkins/job/a/job/b/7/")
+
+        assertEquals(once, JenkinsUrls.rebase(base, once))
+        assertEquals(once, JenkinsUrls.rebase(base, JenkinsUrls.rebase(base, once)))
+    }
+
+    @Test
+    fun `a proxy that maps one context path onto another is rebased at the job segment`() {
+        assertEquals(
+            "https://proxy.example.com/ci/job/a/1/",
+            JenkinsUrls.rebase("https://proxy.example.com/ci/", "http://jenkins:8080/jenkins/job/a/1/"),
+        )
+        assertEquals(
+            "https://proxy.example.com/job/a/1/",
+            JenkinsUrls.rebase("https://proxy.example.com/", "http://jenkins:8080/jenkins/job/a/1/"),
+        )
+    }
+
+    @Test
+    fun `a branch name becomes the item name jenkins gives its job`() {
+        assertEquals("feature%2FORD-214", JenkinsUrls.encodeItemName("feature/ORD-214"))
+        assertEquals("my branch", JenkinsUrls.encodeItemName("my branch"))
+        assertEquals("100%25", JenkinsUrls.encodeItemName("100%"))
+        assertEquals("%2E%2E", JenkinsUrls.encodeItemName(".."))
+        // ...and that name goes into the URL encoded exactly once more, like any other.
+        assertEquals("job/svc/job/my%20branch/", JenkinsUrls.jobPath(listOf("svc", JenkinsUrls.encodeItemName("my branch"))))
+    }
 }

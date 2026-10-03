@@ -114,9 +114,11 @@ class JenkinsAuth(val credential: JenkinsCredential) {
 
     /**
      * §9.2: `/me/api/json` answering 200 is not enough, because a server that allows anonymous read
-     * answers it as `anonymous`. The returned `id` has to be the user we configured.
+     * answers it as `anonymous`. The returned `id` has to be the user we configured - compared
+     * case-insensitively, because Jenkins' default user id strategy is case-insensitive and reports
+     * the id in its stored spelling, not the one the user typed.
      */
-    fun matchesConfiguredUser(id: String): Boolean = id == credential.user
+    fun matchesConfiguredUser(id: String): Boolean = id.equals(credential.user, ignoreCase = true)
 
     val isAnonymousUser: Boolean get() = credential.user.equals("anonymous", ignoreCase = true)
 

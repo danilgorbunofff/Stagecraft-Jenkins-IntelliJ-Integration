@@ -10,7 +10,7 @@ Cache-Control: no-cache,no-store,must-revalidate
 X-Hudson-Theme: default
 Referrer-Policy: same-origin
 Cross-Origin-Opener-Policy: same-origin
-Set-Cookie: JSESSIONID.a1e23cc5=node0j4v4b5r6fk0irmmyd4xq6pq44.node0; Path=/; HttpOnly; SameSite=Lax
+Set-Cookie: JSESSIONID.a1e23cc5=REDACTED.node0; Path=/; HttpOnly; SameSite=Lax
 X-Hudson: 1.395
 X-Jenkins: 2.541.3
 X-Jenkins-Session: bdac80ca

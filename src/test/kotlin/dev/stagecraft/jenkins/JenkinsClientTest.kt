@@ -60,8 +60,31 @@ class JenkinsClientTest {
 
         val failure = assertFailsWith<JenkinsException.Malformed> { client.verifyCredentials() }
 
-        assertTrue(failure.message!!.contains("not actually authenticated"), failure.message!!)
+        assertTrue(failure.message!!.contains("different Jenkins account"), failure.message!!)
         assertTrue(failure.message!!.contains("somebody-else"), failure.message!!)
+    }
+
+    @Test
+    fun `an anonymous answer is named as anonymous, not as another account`() {
+        val fake = FakeTransport()
+        fake.onGetPrefix(mePrefix, Fixtures.of("""{"id":"anonymous","fullName":"Anonymous"}"""))
+
+        val failure = assertFailsWith<JenkinsException.Malformed> { client(fake).verifyCredentials() }
+
+        assertTrue(failure.message!!.contains("not actually authenticated"), failure.message!!)
+        assertTrue(failure.message!!.contains("'anonymous'"), failure.message!!)
+    }
+
+    @Test
+    fun `the configured user is matched the way jenkins matches ids - case aside`() {
+        // Jenkins' default id strategy is case-insensitive and reports the stored spelling, so a
+        // user who typed `Admin` is the `admin` the server answers with.
+        val fake = FakeTransport()
+        fake.onGetPrefix(mePrefix, Fixtures.json("01.me.json"))
+
+        val client = JenkinsClient(base, JenkinsAuth(JenkinsCredential.ApiToken("Admin", "token")), fake)
+
+        assertEquals("admin", client.verifyCredentials().id)
     }
 
     @Test
@@ -316,7 +339,8 @@ class JenkinsClientTest {
         client(fake).builds(listOf("multibranch-demo", "main"), limit = 5)
 
         val tree = java.net.URLDecoder.decode(fake.requests.single().url.substringAfter("?tree="), "UTF-8")
-        assertEquals("builds[_class,number,url,result,building,timestamp,duration]{0,5}", tree)
+        // No `url`: build URLs are built locally, so the field would only cost payload.
+        assertEquals("builds[_class,number,result,building,timestamp,duration]{0,5}", tree)
     }
 
     // ---------------------------------------------------------------- consoles
@@ -510,5 +534,66 @@ class JenkinsClientTest {
 
         assertEquals("admin", client.me().id)
         assertEquals("2.479.3", client.version.toString())
+    }
+
+    // --------------------------------------------------------------- audit regressions
+
+    @Test
+    fun `under a context path a build url is built once and the console is read from it`() {
+        val contextBase = "http://h:8080/jenkins/"
+        val fake = FakeTransport()
+            .onGetPrefix(
+                contextBase + "job/a/api/json",
+                Fixtures.of("""{"builds":[{"number":1,"url":"http://h:8080/jenkins/job/a/1/","result":"SUCCESS"}]}"""),
+            )
+            .onGetPrefix(contextBase + "job/a/1/consoleText", Fixtures.of("log"))
+        val client = JenkinsClient(contextBase, JenkinsAuth(JenkinsCredential.ApiToken("u", "t")), fake)
+
+        val build = client.builds(listOf("a")).single()
+        client.consoleText(build.url)
+
+        assertEquals("http://h:8080/jenkins/job/a/1/", build.url)
+        assertEquals("http://h:8080/jenkins/job/a/1/consoleText", fake.urls().last())
+    }
+
+    @Test
+    fun `a container below the third level is followed with one more request`() {
+        val fake = FakeTransport()
+        fake.onGetPrefix(
+            rootPrefix,
+            Fixtures.of(
+                """{"jobs":[{"name":"team","_class":"$FOLDER_CLASS","jobs":[{"name":"svc","_class":"$FOLDER_CLASS",""" +
+                    """"jobs":[{"name":"api","_class":"$MULTIBRANCH_CLASS"}]}]}]}""",
+            ),
+        )
+        fake.onGetPrefix(
+            base + "job/team/job/svc/job/api/api/json",
+            Fixtures.of("""{"jobs":[{"name":"feature%2Fx","_class":"$WORKFLOW_CLASS"}]}"""),
+        )
+
+        val tree = client(fake).jobTreeDeep()
+
+        assertTrue(tree.complete)
+        val branch = tree.jobs.single { it.displayName == "feature/x" }
+        assertEquals(listOf("team", "svc", "api", "feature%2Fx"), branch.rawPath)
+        assertEquals(4, branch.depth)
+        assertEquals(2, fake.count)
+    }
+
+    @Test
+    fun `the deep walk skips a subtree it may not read and admits a spent budget`() {
+        val fake = FakeTransport()
+        fake.onGetPrefix(
+            rootPrefix,
+            Fixtures.of(
+                """{"jobs":[{"name":"a","_class":"$FOLDER_CLASS","jobs":[{"name":"b","_class":"$FOLDER_CLASS",""" +
+                    """"jobs":[{"name":"hidden","_class":"$FOLDER_CLASS"},{"name":"deep","_class":"$FOLDER_CLASS"}]}]}]}""",
+            ),
+        )
+        fake.onGetPrefix(base + "job/a/job/b/job/hidden/", Fixtures.empty(404))
+        fake.onGetPrefix(base + "job/a/job/b/job/deep/", Fixtures.of("""{"jobs":[]}"""))
+
+        assertTrue(client(fake).jobTreeDeep().complete)
+        assertFalse(client(fake).jobTreeDeep(maxSubtreeRequests = 1).complete)
     }
 }

@@ -25,7 +25,7 @@ also fixed three defects in the parser and one in the container bootstrap (see
 |---|---|
 | Jenkins | 2.541.3 LTS (Jetty 12.1.5, Java 17) |
 | Image | `stagecraft-jenkins:day0` (git, workflow-aggregator, pipeline-model-definition, pipeline-stage-view, workflow-multibranch, cloudbees-folder, junit) |
-| HTTP endpoint | `http://localhost:18080` (also the configured Jenkins root URL; every `url` field in the fixtures uses it) |
+| HTTP endpoint | `http://localhost:18080` (also the configured Jenkins root URL; the HTTP-leg `url` fields use it — the HTTPS captures in `rechecks/r4-*` use `https://localhost:18443`, see [Corrections](#corrections-2026-10-03)) |
 | HTTPS endpoint | `https://localhost:18443` (nginx 1.27 proxy, self-signed cert) |
 | Fallback image | `stagecraft-jenkins:day0-nosv` at `http://localhost:28080` (same plugin set **minus** `pipeline-stage-view`) |
 | Fixture repo | `https://github.com/danilgorbunofff/stagecraft-day0-fixture` |
@@ -97,7 +97,7 @@ with `-k` (self-signed). "Fixture" = committed raw response. **Δ** = see [Devia
 | 4 | "Folders visible, one request" | Only the root level was recorded. `stagecraft/deep/nested-freestyle` was never reached through the API in a fixture. | Folder *recursion* is unverified **by this fixture**. Closed by R5: one request does reach 3 levels. |
 | 6 | Branch build list for the multibranch branch | The committed fixture is `main`, build 1, FAILURE, and it carries `duration,number,result,timestamp,url`. `building` is absent, so the charter's `tree=` was not the one recorded. Previous versions of this record described it as `feature/ORD-214`, UNSTABLE. | The fixture is valid, but for a different branch than described. The `building` field (needed to tell "running" from "failed") has no fixture; R9 supplies the running-build shape (`building: true`, `result: null`, `duration: 0`, `estimatedDuration: -1`, empty `builds` right after the trigger). |
 | 9 | 3 stages | 4 stages. Jenkins prepends a synthetic `Declarative: Checkout SCM` stage for a pipeline that checks out its own SCM. | The parser must expect synthetic `Declarative: …` stages (also `Post Actions`, `Tool Install`, `Agent Setup`) and must not treat them as user stages. |
-| 10 | Body + `X-Text-Size` | Headers only. `X-Text-Size: 12263` is **smaller** than `Content-Length: 12336`, while `consoleText` of the same-shaped build is 2,856 bytes. HTTPS reported 12397, and the build each leg measured is not recorded. | R1 explains the gap exactly: `X-Text-Size` equals the body byte count **minus the number of `CRLF` pairs** (5/5 captures). It is a newline-normalized length, not a file offset and not the body length. The client must echo the server's `X-Text-Size` back as the next `start` and never derive an offset from the bytes it received. |
+| 10 | Body + `X-Text-Size` | Headers only. `X-Text-Size: 12263` is **smaller** than `Content-Length: 12336`, while `consoleText` of the same-shaped build is 2,856 bytes. HTTPS reported 12397, and the build each leg measured is not recorded. | R1 explains the gap exactly: `X-Text-Size` equals the body byte count **minus the number of `CRLF` pairs** (four captures, listed under R1). It is a newline-normalized length, not a file offset and not the body length. The client must echo the server's `X-Text-Size` back as the next `start` and never derive an offset from the bytes it received. |
 | 15 | 403 on a stale crumb | With an **API token**, a POST with a wrong crumb **succeeds** (201/200). The 403 reproduces only with password basic auth. | API-token requests are crumb-exempt (Jenkins ≥ 2.96). Charter §9.2/§15.4/B.2/B.8 updated accordingly. |
 
 ## Parser (check 9)
@@ -106,7 +106,10 @@ The parser now lives at [`tools/parse_stages.py`](../tools/parse_stages.py). Its
 [`tools/test_parse_stages.py`](../tools/test_parse_stages.py) (`python tools/test_parse_stages.py`,
 16 cases, 5 of them over the real parallel consoles captured while closing R2). The three
 `*.parse*.json` fixtures were regenerated with it. Stage names and line
-ranges are identical to the originally recorded output.
+ranges are identical to the originally recorded output. *(Corrected 2026-10-03: the parser has
+since gained `branch`, `laneBinding`, `parentUncertain` and `diagnostics.unattributedStages`, so
+its current output is a superset of the committed JSON; every shared field and range still
+matches, and the tests compare ranges only.)*
 
 | Log | Result |
 |---|---|
@@ -195,9 +198,11 @@ console, so the inference must be labelled as such in the UI.
     note: per-branch console output cannot be reconstructed, so the UI must interleave branches in
     the single console view rather than hosting one log per lane. (R2/R3.)
 15. **`X-Text-Size` is a cumulative, newline-normalized character offset.** It equals the byte
-    count of the log **minus** the number of `CRLF` pairs (5/5 captures on 2.541.3: 17 624→17 527,
-    5 029→5 008, 5 320→5 295, 8 495→8 450; confirmed again on 2.479.3, where a delta fetched from
-    `start=521` came back as 392 bytes = 359 characters + 33 `CRLF` pairs = `880 − 521`). Echo it
+    count of the log **minus** the number of `CRLF` pairs (four captures on 2.541.3: 17 624→17 527,
+    5 029→5 008, 5 320→5 295 from committed headers, 8 495→8 450 from a capture that was not
+    committed; confirmed again on 2.479.3, where a delta fetched from `start=521` came back as
+    392 bytes = 359 characters + 33 `CRLF` pairs = `880 − 521` — the committed body was saved
+    with its line endings normalised, so it shows 359 bytes and LF only). Echo it
     back verbatim as the next `start` — never derive an offset from the bytes received, because a
     delta body's byte count is not a character count. A `start` **beyond the end of the log is not
     an error**: the server resets to 0 and re-sends the entire log, so a tailer must ignore a body
@@ -242,15 +247,15 @@ Executed 2026-10-02 by `curl` against the running containers; raw captures are c
 
 | # | Question | Outcome |
 |---|---|---|
-| R1 | `progressiveText` offsets: `start=0` with body, `start=<X-Text-Size>`, `start=<mid-log>`, `start` beyond the end | **Closed.** `X-Text-Size` = body bytes **− number of `CRLF` pairs** (5/5 captures on 2.541.3: 17 624→17 527, 5 029→5 008, 5 320→5 295, 8 495→8 450) and it is **cumulative** for the whole log, not per response. Echoing it back as `start` works: on a running build → `200`, `Content-Length: 0`, `X-More-Data: true`; after the build ends → `200` with 0 bytes and **no** `X-More-Data`. A `start` beyond the end is not an error — the server **resets to 0 and re-sends the whole log**. Never derive `start` from the bytes received. Confirmed again on 2.479.3 (R10). |
+| R1 | `progressiveText` offsets: `start=0` with body, `start=<X-Text-Size>`, `start=<mid-log>`, `start` beyond the end | **Closed.** `X-Text-Size` = body bytes **− number of `CRLF` pairs** (four captures on 2.541.3: 17 624→17 527, 5 029→5 008, 5 320→5 295 from committed headers; 8 495→8 450 was not committed) and it is **cumulative** for the whole log, not per response. Echoing it back as `start` works: on a running build → `200`, `Content-Length: 0`, `X-More-Data: true`; after the build ends → `200` with 0 bytes and **no** `X-More-Data`. A `start` beyond the end is not an error — the server **resets to 0 and re-sends the whole log**. Never derive `start` from the bytes received. Confirmed again on 2.479.3 (R10). |
 | R2 | Parallel and nested-stage pipelines; `wfapi/describe`; `execution/node/{id}/wfapi/log` | **Closed, with a negative result.** There is **no per-node log and no stage hierarchy endpoint** anywhere: `/execution/node/{id}/wfapi/log` → `{"length":0,"hasMore":false,"consoleUrl":null}`; `/execution/node/{id}/wfapi/describe` → one stage, no children; `/execution/node/{id}/api/json` → not a valid endpoint. Run-level `wfapi/describe` is flat. Per-lane output cannot be recovered: all `{ (Branch: X)` frames open before any lane body and close after all of them, so lexical nesting never reveals lane ownership. Four real consoles were committed (fixtures 10–13) and the parser was rewritten against them (see [Defects found](#defects-found-while-closing-the-re-checks)). |
 | R3 | A skipped later stage and a `post { failure { … } }` block | **Closed** ([`13.console-skipped-post-demo.txt`](fixtures/13.console-skipped-post-demo.txt)): `Stage "Skipped" skipped due to when conditional`, synthetic `Declarative: Post Actions`, inferred failed stage `Fails`, `result FAILURE`. |
-| R4 | HTTPS: are returned `url` fields rebased? | **Closed — they are not.** Through the nginx HTTPS endpoint every `url`/`absoluteUrl` is still `http://localhost:18080/…`, i.e. built from Jenkins' configured root URL, not from the address the client used. Rebasing onto the configured base (or building paths locally) is mandatory, confirmed on HTTPS. |
+| R4 | HTTPS: are returned `url` fields rebased? | **Closed — corrected 2026-10-03.** The committed captures contradict the original wording: through the nginx HTTPS endpoint the `url` fields read `https://localhost:18443/…`, i.e. Jenkins built them from the request the proxy forwarded, not from `http://localhost:18080`. So what a server returns depends on its root-URL configuration and on what the proxy forwards, and neither is under the client's control. The design conclusion stands for that reason, not because of this capture: build job and build URLs locally from the configured base, and rebase only URLs that cannot be built (`JenkinsUrls.rebase`, which now also handles a context path such as `/jenkins/`). |
 | R5 | One-request recursion to `stagecraft/deep/nested-freestyle` | **Closed.** A single `tree=jobs[name,url,_class,jobs[name,url,_class,jobs[name,url,_class]]]` reached all 3 levels. Nested folder children also come back **double-encoded** in `url` (`…/job/stagecraft/job/deep/job/nested-freestyle/`) while `name` is not. |
 | R6 | Bad token → `/me/api/json` | **Closed.** `401 Unauthorized` with `WWW-Authenticate: Basic realm="Jenkins"` and a `remember-me` cookie cleared to 1970. Cleanly distinguishable from 403/404. |
 | R7 | A user without `Item/Read` on a job | **Closed, and the answer is "neither".** With `matrix-auth` 3.3 on 2.541.3 (`GlobalMatrixAuthorizationStrategy`: `admin` full control, `hudson.model.Hudson/Read` for `authenticated`) an authenticated `outsider` gets **404 with an HTML body** for `/job/freestyle-fail/api/json`, `…?tree=builds[number]` and `/job/freestyle-fail/1/consoleText`; **anonymous gets 403**; granting `Item/Read` flips the same calls to `200`. So 404 conflates "does not exist" with "hidden", and the same URL returns 403 or 404 depending only on whether the caller is authenticated. The client must never render 404 as "job not found" (charter check 14 / §9.5). |
 | R8 | A branch-source multibranch where a branch has an open PR | **Closed.** `GitHubSCMSource` with `BranchDiscoveryTrait(1)` **excludes** `feature/ORD-215` ("Ignoring SCMHead{'feature/ORD-215'} because current strategy excludes branches that ARE also filed as a pull request") and discovers `main` + `feature%2FORD-214`; the PR check then runs under the imposed limiter (behaviour 18) but **does** finish — `PR-1` appeared with its own `PR-1/1` build, exactly the documented `PR-<n>` naming. The child job's `actions` also say what it is: `PR-1` carries `ContributorMetadataAction` + `ObjectMetadataAction`, `main` carries `PrimaryInstanceMetadataAction`, `feature%2FORD-214` only `ObjectMetadataAction` (behaviour 21). Discovery of "my branch" must look for the `PR-<n>` sibling when the branch is PR-only, because no job carries the branch name then. |
-| R9 | Branch build list on a **running** build | **Closed.** Immediately after the trigger: `building: true`, `result: null`, `duration: 0`, `estimatedDuration: -1`, `builds: []`. 90 s later the same job reports `building: false`, `result: SUCCESS`, `duration: 92204`. |
+| R9 | Branch build list on a **running** build | **Closed.** Immediately after the trigger: `building: true`, `result: null`, `duration: 0`, `estimatedDuration: -1`; the job's `builds` list already holds that build (number 1, `building: true` — corrected 2026-10-03, the original said `builds: []`). 90 s later the same job reports `building: false`, `result: SUCCESS`, `duration: 92204` (this second observation has no committed fixture). |
 | R10 | One older LTS (checks 1, 2, 8, 10, 12, 15) | **Closed** on `jenkins/jenkins:2.479.3-lts` (`X-Jenkins: 2.479.3`, Jetty 12.0.16) with **zero plugins installed** (`{"_class":"hudson.LocalPluginManager","plugins":[]}`): 1 → 200; 2 → 64-hex crumb; 8 → `consoleText` 200 `text/plain;charset=utf-8`; 10 → running `X-Text-Size: 521` + `X-More-Data: true`, finished `X-Text-Size: 880` with the header **absent**, and a fetch from `start=521` returned a 392-byte body containing 33 `CRLF` pairs — i.e. 359 characters, exactly `880 − 521`, an independent confirmation of the R1 rule on a second LTS; 12 → `/job/r10-console/wfapi/describe` **404** with a 73 KB `text/html;charset=utf-8` body even though the job exists; 15 → wrong crumb and no crumb both `403 No valid crumb was included in the request` with password auth, while a crumb-free `GET` is 200. The 2.479.3 findings match 2.541.3 exactly. |
 
 ### Defects found while closing the re-checks
@@ -294,7 +299,7 @@ which the rewritten parser is written against.
 
 | Fixture | Job | What it exercises |
 |---|---|---|
-| `10.console-parallel-demo.txt` | `stagecraft/parallel-demo` | 10 lanes, all `{ (Branch: X)` frames opening before any lane body |
+| `10.console-parallel-demo.txt` | `stagecraft/parallel-demo` | 3 lanes (A, B, C), all `{ (Branch: X)` frames opening before any lane body |
 | `11.console-parallel-nested.txt` | `stagecraft/parallel-nested` | stages *inside* lanes, whose lane ownership is not recoverable from the console |
 | `12.console-nested-stages-demo.txt` | `stagecraft/nested-stages-demo` | ordinary nested stages |
 | `13.console-skipped-post-demo.txt` | `stagecraft/skipped-post-demo` | a `when`-skipped stage plus a synthetic `Declarative: Post Actions` |
@@ -307,3 +312,24 @@ the branch-source scan log that the tables above quote. Credentials are redacted
 Housekeeping on review: HTML error bodies were renamed from `.json` to `.html`
 (`11.testreport-404.html`, `nosv.wfapi-404.html`); the page crumb embedded in `14.404.txt` was
 replaced with `REDACTED-CRUMB`; the parser moved from `docs/fixtures/` to `tools/`.
+
+## Corrections (2026-10-03)
+
+An audit compared every checkable statement above with the committed fixtures. Most hold. These
+did not, and are corrected in place where they are quoted above:
+
+| Where | Said | The fixtures say |
+|---|---|---|
+| R4, header table | HTTPS responses carry `http://localhost:18080/…` urls | `rechecks/r4-https-*.json` carry `https://localhost:18443/…` urls. The design rule (build URLs locally) stands on other grounds; see R4. |
+| R9 | `builds: []` on the running job | `r9-running-build.json` lists the running build (number 1, `building: true`) |
+| R1, behaviour 15, deviation 10 | "5/5 captures" | four pairs are listed, three of them in committed headers |
+| R10 delta | "392 bytes = 359 characters + 33 `CRLF` pairs" | the committed `r10-check10.finished.delta.body.txt` is 359 bytes, LF only — its line endings were normalised before it was committed, so it cannot show the CRLF count |
+| Deviation 10 | R1 "explains the gap exactly" against `08.console-main.txt` | the CRLF rule accounts for 73 of the bytes; the rest of the 12 336 − 2 856 gap is the hidden `ha:` console notes. Stripping the notes and normalising CRLF turns `16.progressive-main-finished.raw.txt` into `08.console-main.txt` byte for byte (asserted by `ConsoleTextTest`) |
+| Fixture table | `10.console-parallel-demo.txt` has 10 lanes | 3 lanes |
+| Parser section | parse fixtures equal the current parser's output | the current parser emits extra fields; ranges match |
+| `rechecks/README.md` | several sizes and offsets | corrected in that file |
+| Redaction | session cookies are redacted | three `JSESSIONID` values were not (`03.headers.txt`, `https.03.headers.txt`, `rechecks/r10-check12.wfapi-404.headers.txt`); now `REDACTED`. They belonged to throwaway containers. |
+
+Still open, and not fixable after the fact: the HTTPS results for checks 1, 2, 4–6 and 10 were not
+committed, so §15.1's "all 15 checks on HTTP and HTTPS" rests on the HTTP fixtures plus
+`https.03`, `https.07` and `https.13` for those checks.

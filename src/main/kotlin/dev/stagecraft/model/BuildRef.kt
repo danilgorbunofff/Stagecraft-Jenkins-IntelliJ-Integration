@@ -3,9 +3,10 @@ package dev.stagecraft.model
 /**
  * One build of one job.
  *
- * [url] is always an absolute URL rebased onto the configured server base, never the value Jenkins
- * returned verbatim: Jenkins builds URLs from its own configured root URL, so a server reached over
- * HTTPS through a proxy still answers with `http://localhost:18080/...` (Day-0 re-check R4).
+ * [url] is always an absolute URL built locally from the configured server base, the job's raw path
+ * and the build number - never the value Jenkins returned. Jenkins builds its URLs from its own idea
+ * of the root URL, which need not be the address the IDE reaches it on, nor carry the same context
+ * path.
  */
 data class BuildRef(
     val jobFullName: String,

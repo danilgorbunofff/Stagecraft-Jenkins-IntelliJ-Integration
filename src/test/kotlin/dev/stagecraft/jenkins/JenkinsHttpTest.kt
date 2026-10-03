@@ -227,4 +227,41 @@ class JenkinsHttpTest {
         const val FORBIDDEN_CRUMB_BODY =
             "<html><head><title>Error 403 No valid crumb was included in the request</title></head></html>"
     }
+
+    // --------------------------------------------------------------- the global authenticator (audit)
+
+    @Test
+    fun `a 401 comes back as a 401 without consulting the process-wide authenticator`() {
+        // Inside an IDE the default Authenticator is the platform's. The JDK used to hand it every
+        // 401 and replay the request with its answer - 20 times, measured.
+        val server = com.sun.net.httpserver.HttpServer.create(java.net.InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/") { exchange ->
+            exchange.requestBody.readAllBytes()
+            exchange.responseHeaders.add("WWW-Authenticate", "Basic realm=\"Jenkins\"")
+            exchange.sendResponseHeaders(401, -1)
+            exchange.close()
+        }
+        server.start()
+        val asked = java.util.concurrent.atomic.AtomicInteger()
+        val previous = java.net.Authenticator.getDefault()
+        java.net.Authenticator.setDefault(object : java.net.Authenticator() {
+            override fun getPasswordAuthentication(): java.net.PasswordAuthentication {
+                asked.incrementAndGet()
+                return java.net.PasswordAuthentication("someone", "else".toCharArray())
+            }
+        })
+        try {
+            val http = JenkinsHttp(
+                "http://127.0.0.1:${server.address.port}/",
+                JenkinsAuth(JenkinsCredential.ApiToken("admin", "revoked")),
+                transport = UrlConnectionTransport(),
+            )
+
+            assertEquals(401, http.get("me/api/json").status)
+            assertEquals(0, asked.get())
+        } finally {
+            java.net.Authenticator.setDefault(previous)
+            server.stop(0)
+        }
+    }
 }

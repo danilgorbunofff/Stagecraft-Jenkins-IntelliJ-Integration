@@ -4,7 +4,7 @@
 > **Name on the Marketplace listing:** `Stagecraft • Jenkins Build & Log Viewer`
 > **Product code:** `PSTAGECRAFT` (candidate, not yet registered)
 > **Charter written:** 2026-10-01
-> **Status:** chartered; Day-0 gate executed 2026-10-01 — **PASS with deviations** ([`docs/day0-verification.md`](docs/day0-verification.md)). No product code written. The only code is the reference stage parser in [`tools/`](tools/). The Day-0 fixture repository is public on GitHub.
+> **Status:** chartered; Day-0 gate executed 2026-10-01 — **PASS with deviations** ([`docs/day0-verification.md`](docs/day0-verification.md)). Days 1–2 done; Days 3–6 in progress (see [`docs/plan/`](docs/plan/)). Compatibility floor raised to IntelliJ 2024.2 (since-build 242) on 2026-10-03 — see §9.1. The Day-0 fixture repository is public on GitHub.
 > **Reviewed:** 2026-10-01. A strict review corrected several figures and the §9 technical design. Each corrected number states how it was computed.
 > **Method:** JetBrains Marketplace public API, Jenkins Update Center plugin API, and verbatim user reviews. Every integer in this document is an API's own returned value, or is computed from those values with the computation shown. None are made up. Scenario rows in §12.3 marked "assumed" are assumptions, labelled as such.
 
@@ -658,9 +658,9 @@ Marketplace tags found on competing listings: `Completion`, `Machine Learning`, 
 
 ### 9.1 Module layout
 
-Gradle, Kotlin, IntelliJ Platform Gradle Plugin 2.x. Targets IntelliJ IDEA (Community and Ultimate, or the unified distribution from 2025.3 onward; verify the edition story at Day 1), with `since-build` set low enough to cover 2023.x and later.
+Gradle, Kotlin, IntelliJ Platform Gradle Plugin 2.x. Targets IntelliJ IDEA (Community and Ultimate, or the unified distribution from 2025.3 onward; verify the edition story at Day 1), with `since-build` 242 (2024.2) and later. *(Changed 2026-10-03 from "cover 2023.x": a plugin runs on the IDE's own Kotlin standard library, Kotlin 2.4 can only target a 2.0+ standard library, and 2024.2 is the first IDE that ships one. Kotlin-compiled enums alone call `kotlin.enums.EnumEntriesKt`, which 2023.1–2023.2 do not have. Keeping 2023.x means an older Kotlin toolchain and serialization library, verified with the Plugin Verifier.)*
 
-**JVM target trap:** 2023.x through 2024.1 IDEs run on Java 17. Compile with a JDK 21 toolchain if you like, but emit **Java 17 bytecode** (`jvmTarget = 17`) while `since-build` is below `242`. Otherwise the plugin fails to load on those IDEs.
+**JVM target trap:** 2023.x through 2024.1 IDEs run on Java 17. Compile with a JDK 21 toolchain if you like, but emit **Java 17 bytecode** (`jvmTarget = 17`) while `since-build` is below `242`. Otherwise the plugin fails to load on those IDEs. **The Kotlin stdlib trap is the same shape:** pin `apiVersion` to the Kotlin version the oldest supported IDE ships, and keep bundled Kotlin libraries (kotlinx-serialization) at a release built for that version.
 
 ```
 stagecraft/
@@ -911,7 +911,7 @@ GET {build}/logText/progressiveText?start={offset}
 
 Poll every **2 seconds** while the build is running, appending only the delta. Stop when `X-More-Data` is absent (it is absent, not `false`, on a finished build: Day-0 check 10). Stop immediately if the tool window closes or the project is disposed.
 
-**Treat `X-Text-Size` as an opaque cursor.** It is an offset into Jenkins' raw log file, which contains hidden console annotations. It is **not** the byte length of the text you received. Day-0 recorded `X-Text-Size: 12263` against a `Content-Length` of 12,336 for a log whose plain text is about 2.9 KB. Never compute the next offset from the body. Whether an arbitrary mid-log offset (for a tail fetch, §9.7) lands cleanly is unverified (re-check R1).
+**Treat `X-Text-Size` as an opaque cursor.** It is an offset into Jenkins' raw log file, which contains hidden console annotations. It is **not** the byte length of the text you received. Day-0 recorded `X-Text-Size: 12263` against a `Content-Length` of 12,336 for a log whose plain text is about 2.9 KB. Never compute the next offset from the body. A mid-log offset on a finished build returns the remaining bytes (re-check R1, closed).
 
 `{build}/logText/progressiveHtml` exists and returns the same content with Jenkins' own hyperlinks and colours. **Do not use it.** Stagecraft must produce its own linkified view (9.6) because the whole point is that frames resolve to *source files*, not to Jenkins URLs.
 
@@ -1028,7 +1028,7 @@ Do not write plugin code until this day is complete. It exists to convert the pl
 
 **Record the raw responses in `docs/day0-verification.md` in this repository.** They become the recording fixtures for the `dev.stagecraft.jenkins` unit tests (9.1).
 
-**Executed 2026-10-01: PASS with deviations.** The [record](docs/day0-verification.md) lists six deviations from the table above and ten open re-checks (R1–R10), each with the build day it blocks.
+**Executed 2026-10-01: PASS with deviations.** The [record](docs/day0-verification.md) lists six deviations from the table above and ten re-checks (R1–R10), all closed on 2026-10-02 against live servers.
 
 ---
 

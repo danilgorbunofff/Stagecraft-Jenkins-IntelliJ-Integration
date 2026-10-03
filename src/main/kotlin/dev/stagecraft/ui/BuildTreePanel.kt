@@ -93,8 +93,12 @@ class BuildTreePanel(
      * cannot unhook the handler of the panel that replaced it.
      */
     private val stateHandler: (ToolWindowState) -> Unit = { state ->
-        ApplicationManager.getApplication().invokeLater { render(state) }
+        ApplicationManager.getApplication().invokeLater({ if (!disposed) render(state) }, project.disposed)
     }
+
+    /** Set on [dispose]; a state that arrives afterwards is for a panel nobody can see. */
+    @Volatile
+    private var disposed = false
 
     init {
         border = BorderFactory.createEmptyBorder(JBUI.scale(6), JBUI.scale(8), JBUI.scale(6), JBUI.scale(8))
@@ -169,11 +173,12 @@ class BuildTreePanel(
         // Quiet refresh, but only while somebody is looking: polling a server nobody is watching
         // is exactly the traffic §7.3 rule 1 exists to prevent.
         poller = service.poller.start {
-            ApplicationManager.getApplication().invokeLater { if (isShowing()) service.refresh() }
+            ApplicationManager.getApplication().invokeLater({ if (!disposed && isShowing()) service.refresh() }, project.disposed)
         }
     }
 
     override fun dispose() {
+        disposed = true
         poller?.cancel()
         poller = null
         if (viewModel.onState === stateHandler) viewModel.onState = null
@@ -184,7 +189,7 @@ class BuildTreePanel(
 
         when (state) {
             is ToolWindowState.Ready -> {
-                model.replaceAll(state.builds)
+                replaceBuilds(state.builds)
                 val count = if (state.builds.size == 1) "1 build" else "${state.builds.size} builds"
                 val cache = if (state.fromCache) " - from cache" else ""
                 title.text = "<html><b>${escape(state.job.displayName)}</b> - $count$cache</html>"
@@ -225,6 +230,19 @@ class BuildTreePanel(
                 showMessageCard(refresh = false, retry = state.retryable, configure = !state.retryable)
             }
         }
+    }
+
+    /**
+     * Swap in a fresh list without losing the user's place: a poll replaces the list every 15
+     * seconds, and a selection that jumped away under the cursor would make double-click open the
+     * wrong build. An unchanged list is not touched at all.
+     */
+    private fun replaceBuilds(builds: List<BuildRef>) {
+        if (model.items == builds) return
+        val selected = list.selectedValue?.url
+        model.replaceAll(builds)
+        val index = if (selected == null) -1 else builds.indexOfFirst { it.url == selected }
+        if (index >= 0) list.selectedIndex = index
     }
 
     private fun elapsedMs(): Long = (System.nanoTime() - contentCreatedAt) / 1_000_000

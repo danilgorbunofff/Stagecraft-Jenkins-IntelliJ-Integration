@@ -57,6 +57,8 @@ class BuildsViewModelTest {
                     testJob(listOf("unrelated"), FOLDER_CLASS),
                 ),
                 serverUrl = base,
+                // Fresh: a cache older than the loader's refresh window is refetched on load.
+                fetchedAtMillis = System.currentTimeMillis(),
             ),
         )
     }
@@ -129,6 +131,7 @@ class BuildsViewModelTest {
             val fake = transport()
             fake.routeMe()
             fake.onGetPrefix(base + "job/svc/job/main/api", Fixtures.json("06.branchbuilds.json"))
+            fake.onGetPrefix(base + "job/svc/job/main/1/api", Fixtures.json("07.remotedata.json"))
             val (model, _) = loader(fake = fake, cacheDir = dir)
 
             val state = model.load(configured(), ctx())
@@ -138,16 +141,19 @@ class BuildsViewModelTest {
             val build = state.builds[0]
             assertEquals(1, build.number)
             assertEquals(BuildStatus.FAILURE, build.status)
-            assertEquals("http://localhost:18080/job/multibranch-demo/job/main/1/", build.url)
+            // Built from the matched job, not copied from the payload (whose url names another job).
+            assertEquals("http://localhost:18080/job/svc/job/main/1/", build.url)
             assertTrue(state.how.contains("main"), state.how)
-            // Exactly two calls, in this order: the identity check, then the branch's builds. The
-            // warm index is read from disk, so the tree is never refetched (§9.2).
-            assertEquals(2, fake.count)
+            // Exactly three calls, in this order: the identity check, the branch's builds, and the
+            // one-build confirmation of §9.4 step 3. The warm index is read from disk, so the tree
+            // is never refetched (§9.2).
+            assertEquals(3, fake.count)
             assertTrue(fake.urls()[0].startsWith(base + "me/api"), fake.urls().toString())
             assertTrue(
                 fake.urls()[1].startsWith(base + "job/svc/job/main/api/json?tree=builds"),
                 fake.urls().toString(),
             )
+            assertTrue(fake.urls()[2].startsWith(base + "job/svc/job/main/1/api/json?tree=actions"), fake.urls().toString())
         } finally {
             dir.deleteRecursively()
         }
@@ -476,5 +482,170 @@ class BuildsViewModelTest {
         } finally {
             scheduler.shutdownNow()
         }
+    }
+
+    // --------------------------------------------------------------- audit regressions
+
+    private val treeWithNewBranch =
+        """{"jobs":[{"name":"svc","_class":"$MULTIBRANCH_CLASS","jobs":[""" +
+            """{"name":"main","_class":"$WORKFLOW_CLASS"},{"name":"feature-x","_class":"$WORKFLOW_CLASS"}]}]}"""
+
+    @Test
+    fun `a branch pushed after the index was cached is found by refetching the index`() {
+        val dir = tempDir()
+        try {
+            JobIndex.save(
+                dir,
+                JobIndex.of(
+                    listOf(testJob(listOf("svc"), MULTIBRANCH_CLASS), testJob(listOf("svc", "main"), WORKFLOW_CLASS)),
+                    serverUrl = base,
+                    fetchedAtMillis = 1_000_000,
+                ),
+            )
+            val fake = transport()
+            fake.routeMe()
+            fake.onGetPrefix(base + "api/json", Fixtures.of(treeWithNewBranch))
+            fake.onGetPrefix(base + "job/svc/job/feature-x/api", Fixtures.json("06.branchbuilds.json"))
+            val loader = DefaultBuildsLoader(
+                InMemoryCredentialStore().apply { save(base, "admin", "token") },
+                factory(fake),
+                dir,
+                clock = { 1_000_000 + DefaultBuildsLoader.MISS_REFETCH_AGE_MILLIS + 1 },
+            )
+
+            val state = loader.load(configured(), ctx(branch = "feature-x"))
+
+            assertTrue(state is ToolWindowState.Ready, "was $state")
+            assertEquals("feature-x", state.job.displayName)
+            // ...and the fresher index is what the next IDE start reads.
+            assertTrue(JobIndex.load(dir, base)!!.jobs.any { it.displayName == "feature-x" })
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `a miss on a just-fetched index does not refetch on every poll`() {
+        val dir = tempDir()
+        try {
+            seedCache(dir) // fetched "now"
+            val fake = transport()
+            fake.routeMe()
+            val (loader, _) = loader(fake = fake, cacheDir = dir)
+
+            val state = loader.load(configured(), ctx(branch = "not-pushed-yet"))
+
+            assertTrue(state is ToolWindowState.Failed, "was $state")
+            assertTrue(state.reason.contains("not-pushed-yet"), state.reason)
+            assertTrue(fake.urls().none { it.startsWith(base + "api/json") }, fake.urls().toString())
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `an old index is refetched even on a hit`() {
+        val dir = tempDir()
+        try {
+            seedCache(dir)
+            val fake = transport()
+            fake.routeMe()
+            fake.onGetPrefix(base + "api/json", Fixtures.of(treeWithNewBranch))
+            fake.onGetPrefix(base + "job/svc/job/main/api", Fixtures.json("06.branchbuilds.json"))
+            val loader = DefaultBuildsLoader(
+                InMemoryCredentialStore().apply { save(base, "admin", "token") },
+                factory(fake),
+                dir,
+                clock = { System.currentTimeMillis() + DefaultBuildsLoader.MAX_INDEX_AGE_MILLIS + 1 },
+            )
+
+            assertTrue(loader.load(configured(), ctx()) is ToolWindowState.Ready)
+            assertEquals(1, fake.urls().count { it.startsWith(base + "api/json") })
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `credentials are verified once per client, not on every poll`() {
+        val dir = tempDir()
+        try {
+            seedCache(dir)
+            val fake = transport()
+            fake.routeMe()
+            fake.onGetPrefix(base + "job/svc/job/main/api", Fixtures.json("06.branchbuilds.json"))
+            fake.onGetPrefix(base + "job/svc/job/main/1/api", Fixtures.of("""{"actions":[]}"""))
+            val client = JenkinsClient(base, JenkinsAuth(JenkinsCredential.ApiToken("admin", "token")), fake)
+            val loader = DefaultBuildsLoader(
+                InMemoryCredentialStore().apply { save(base, "admin", "token") },
+                { _, _, _ -> client },
+                dir,
+            )
+
+            repeat(3) { assertTrue(loader.load(configured(), ctx()) is ToolWindowState.Ready) }
+
+            assertEquals(1, fake.requestsMatching("/me/api").size)
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `a poll over a list on screen is quiet`() {
+        val dir = tempDir()
+        try {
+            seedCache(dir)
+            val fake = transport()
+            fake.routeMe()
+            fake.onGetPrefix(base + "job/svc/job/main/api", Fixtures.json("06.branchbuilds.json"))
+            val seen = ArrayList<ToolWindowState>()
+            val model = viewModel(fake = fake, cacheDir = dir)
+            model.refresh(configured(), ctx())
+            model.onState = { seen += it }
+
+            model.refresh(configured(), ctx()) // what one poll tick does
+
+            assertTrue(seen.none { it is ToolWindowState.Loading }, seen.toString())
+            assertTrue(seen.single() is ToolWindowState.Ready, seen.toString())
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `a job whose newest build came from another repository says so, once`() {
+        val dir = tempDir()
+        try {
+            seedCache(dir)
+            val fake = transport()
+            fake.routeMe()
+            fake.onGetPrefix(base + "job/svc/job/main/api", Fixtures.json("06.branchbuilds.json"))
+            fake.onGetPrefix(
+                base + "job/svc/job/main/1/api",
+                Fixtures.of("""{"actions":[{"remoteUrls":["https://github.com/other-org/svc.git"]}]}"""),
+            )
+            val (loader, _) = loader(fake = fake, cacheDir = dir)
+
+            val first = loader.load(configured(), ctx())
+            val second = loader.load(configured(), ctx())
+
+            assertTrue(first is ToolWindowState.Ready && second is ToolWindowState.Ready)
+            assertTrue(first.how.contains("other-org/svc"), first.how)
+            assertEquals(first.how, second.how)
+            assertEquals(1, fake.requestsMatching("job/svc/job/main/1/api").size)
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `a token is the configured user's, not any user's on that server`() {
+        val credentials = InMemoryCredentialStore().apply { save(base, "alice", "alices-token") }
+        val (loader, fake) = loader(credentials = credentials)
+
+        val state = loader.load(configured(), ctx()) // configured as "admin"
+
+        assertTrue(state is ToolWindowState.Failed && !state.retryable, "was $state")
+        assertEquals(0, fake.count)
     }
 }

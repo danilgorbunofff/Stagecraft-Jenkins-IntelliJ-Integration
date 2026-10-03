@@ -3,7 +3,9 @@ package dev.stagecraft.jenkins
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InputStream
+import java.net.Authenticator
 import java.net.HttpURLConnection
+import java.net.PasswordAuthentication
 import java.net.ProxySelector
 import java.net.URI
 import java.net.URL
@@ -257,6 +259,7 @@ class UrlConnectionTransport(
         }
         val connection = (if (proxy != null) url.openConnection(proxy) else url.openConnection()) as HttpURLConnection
         connection.instanceFollowRedirects = false
+        connection.setAuthenticator(ProxyOnlyAuthenticator)
         connection.connectTimeout = connectTimeoutMillis
         connection.readTimeout = readTimeoutMillis
         connection.requestMethod = request.method
@@ -285,6 +288,34 @@ class UrlConnectionTransport(
         connection.headerFields.entries
             .filter { it.key != null }
             .flatMap { entry -> entry.value.orEmpty().map { entry.key to it } }
+
+    /**
+     * The JDK hands every `401` to the process-wide [Authenticator] - even when the request already
+     * carries an `Authorization` header - and replays the request with whatever it returns, up to 20
+     * times (measured). Inside an IDE that authenticator is the platform's, which may prompt with a
+     * login dialog or replay credentials stored for a different purpose. A rejected Jenkins token has
+     * to come back to us as a plain 401, so server challenges are refused here.
+     *
+     * Proxy challenges (`407`) still go to the default authenticator: that is where the IDE keeps the
+     * proxy credentials the user configured, and §7.3 rule 4 wants those honoured.
+     */
+    private object ProxyOnlyAuthenticator : Authenticator() {
+        override fun getPasswordAuthentication(): PasswordAuthentication? {
+            if (requestorType != RequestorType.PROXY) return null
+            val fallback = Authenticator.getDefault() ?: return null
+            if (fallback === this) return null
+            return fallback.requestPasswordAuthenticationInstance(
+                requestingHost,
+                requestingSite,
+                requestingPort,
+                requestingProtocol,
+                requestingPrompt,
+                requestingScheme,
+                requestingURL,
+                requestorType,
+            )
+        }
+    }
 
     companion object {
         const val USER_AGENT = "Stagecraft-IntelliJ"

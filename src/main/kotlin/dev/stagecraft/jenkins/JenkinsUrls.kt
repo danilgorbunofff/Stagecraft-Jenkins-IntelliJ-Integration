@@ -5,7 +5,7 @@ import java.io.ByteArrayOutputStream
 /**
  * URL arithmetic for Jenkins, and the only place that knows the two ways Jenkins encodes things.
  *
- * The trap, measured at Day-0 and recorded in `docs/fixtures/recheck` notes: a folder's child is
+ * The trap, measured at Day-0 and recorded in `docs/fixtures/rechecks` notes: a folder's child is
  * reported as `"name": "feature%2FORD-214"` - already percent-encoded once - while its URL is
  * `.../job/feature%252FORD-214/`, which is that name encoded a *second* time. So the rule is:
  * take `name` verbatim as the identity, and percent-encode it exactly once more when it goes into
@@ -101,22 +101,80 @@ object JenkinsUrls {
     /**
      * Move a URL that Jenkins produced onto the base we actually talk to.
      *
-     * Jenkins builds every `url` and `absoluteUrl` it emits from its own configured root URL, so a
-     * server reached at `https://localhost:18443/` through nginx answers with `https://localhost:18443/`
-     * even when the request arrived at `http://localhost:18080/` - and vice versa (Day-0 re-check R4).
-     * Only the path and query survive; the scheme, host and port are ours.
+     * Jenkins builds every `url` and `absoluteUrl` it emits from *its* idea of the root - the
+     * configured root URL, or whatever a proxy's forwarded headers told it - and that need not be the
+     * address the IDE reaches it on. So the scheme, host and port are always ours. The path needs
+     * more care, because both sides may carry a context path, and they need not be the same one:
+     *
+     *  1. the path already sits under our base's context path (`/jenkins/job/a/1/` against
+     *     `https://ci/jenkins/`) - it is used as it stands. This is the common case of a Jenkins
+     *     started with `--prefix=/jenkins`, and it is what makes rebasing idempotent: a URL that has
+     *     been rebased once comes back unchanged;
+     *  2. otherwise the path is cut at its first `/job/` segment, which is where the root ends in
+     *     every job and build URL, and re-rooted on the base. This covers a proxy that maps `/ci/`
+     *     onto a Jenkins at `/` or at `/jenkins/`;
+     *  3. anything else (a root-level URL such as `/me/`) is taken as relative to the root.
+     *
+     * Prefer building URLs locally ([jobUrl]) wherever the raw path is known; this is for the URLs
+     * we can only get from the server.
      */
     fun rebase(base: String, serverUrl: String): String {
         val value = serverUrl.trim()
         if (value.isEmpty()) return base
+        val path: String
         val schemeEnd = value.indexOf("://")
         if (schemeEnd >= 0) {
-            val authorityStart = schemeEnd + 3
-            val pathStart = value.indexOf('/', authorityStart)
-            return if (pathStart < 0) base else base + value.substring(pathStart + 1)
+            val pathStart = value.indexOf('/', schemeEnd + 3)
+            if (pathStart < 0) return base
+            path = value.substring(pathStart)
+        } else if (value.startsWith("/")) {
+            path = value
+        } else {
+            return base + value
         }
-        return if (value.startsWith("/")) base + value.substring(1) else base + value
+
+        val baseOrigin = origin(base)
+        val basePath = base.substring(baseOrigin.length)
+        if (basePath != "/" && path.startsWith(basePath)) return baseOrigin + path
+
+        val job = path.indexOf("/job/")
+        if (job >= 0) return base + path.substring(job + 1)
+        return base + path.removePrefix("/")
     }
+
+    /** `scheme://authority` of an absolute URL, without the path. */
+    private fun origin(url: String): String {
+        val schemeEnd = url.indexOf("://")
+        if (schemeEnd < 0) return ""
+        val pathStart = url.indexOf('/', schemeEnd + 3)
+        return if (pathStart < 0) url else url.substring(0, pathStart)
+    }
+
+    /**
+     * The `name` Jenkins gives the branch job for [branch] - what `branch-api`'s `NameEncoder` does.
+     *
+     * Only the characters Jenkins refuses in an item name are percent-encoded (`/` becomes `%2F`, `%`
+     * becomes `%25`, and so on); everything else, a space included, is kept as it is. That is the
+     * spelling the job tree reports and the spelling [jobPath] expects, so a branch path built here
+     * matches the one Jenkins would have listed. Encoding with [encodeSegment] instead would turn
+     * `my branch` into `my%20branch`, which [jobPath] encodes again into a 404.
+     */
+    fun encodeItemName(branch: String): String {
+        if (branch == ".") return "%2E"
+        if (branch == "..") return "%2E%2E"
+        val out = StringBuilder(branch.length + 8)
+        for (char in branch) {
+            if (char in UNSAFE_ITEM_CHARS) {
+                out.append('%').append(HEX[char.code shr 4]).append(HEX[char.code and 0x0F])
+            } else {
+                out.append(char)
+            }
+        }
+        return out.toString()
+    }
+
+    /** `Jenkins.checkGoodName`'s refused characters, which `NameEncoder` escapes. */
+    private const val UNSAFE_ITEM_CHARS = "?*/\\%!@#$^&|<>[]:;"
 
     /** `{url}api/json?tree={tree}` with the tree query escaped. */
     fun apiJson(url: String, tree: String): String =

@@ -108,9 +108,9 @@ class JenkinsService(private val project: Project) : Disposable {
      * rule 2). Reading on [io] also puts the read in the same queue as [updateCredentials]'s write,
      * so a read can never land after a write and show a token that is already out of date.
      */
-    fun readToken(serverUrl: String, onLoaded: (String) -> Unit) {
+    fun readToken(serverUrl: String, user: String, onLoaded: (String) -> Unit) {
         io.execute {
-            val token = credentials.token(serverUrl).orEmpty()
+            val token = credentials.token(serverUrl, user).orEmpty()
             // `any()`, not a bare `invokeLater`: from a background thread a bare call posts with
             // `defaultModalityState()`, which off the EDT is `nonModal()` - "the state when no modal
             // dialogs are open" - and a runnable posted in that state is deferred until the dialog
@@ -160,15 +160,36 @@ class JenkinsService(private val project: Project) : Disposable {
         scheduler.shutdownNow()
     }
 
-    /** A client wired to the IDE's own proxy and trust settings (§9.2). */
+    /** What a [JenkinsClient] was built from; any change means a new client. */
+    private data class ClientKey(
+        val baseUrl: String,
+        val user: String,
+        val token: String,
+        val secretIsPassword: Boolean,
+        val useProxy: Boolean,
+        val trustCertificate: Boolean,
+    )
+
+    /** Only touched on [io], which runs one task at a time. */
+    private var client: Pair<ClientKey, JenkinsClient>? = null
+
+    /**
+     * A client wired to the IDE's own proxy and trust settings (§9.2), reused for as long as the
+     * settings it was built from stand. Reuse is the point: one client is one cookie jar and one crumb
+     * cache per server (§9.2), where a client per load would open a new Jenkins session on every poll
+     * with password auth and throw the crumb away each time.
+     */
     private fun clientFor(baseUrl: String, user: String, token: String): JenkinsClient {
         val state = settings.state
+        val key = ClientKey(baseUrl, user, token, state.secretIsPassword, state.useProxy, state.trustCertificate)
+        client?.let { (builtFrom, existing) -> if (builtFrom == key) return existing }
+
         val credential = if (state.secretIsPassword) {
             JenkinsCredential.Password(user, token)
         } else {
             JenkinsCredential.ApiToken(user, token)
         }
-        return JenkinsClient(
+        val fresh = JenkinsClient(
             baseUrl = baseUrl,
             auth = JenkinsAuth(credential),
             transport = UrlConnectionTransport(
@@ -176,6 +197,8 @@ class JenkinsService(private val project: Project) : Disposable {
                 sslContext = sslContext(state),
             ),
         )
+        client = key to fresh
+        return fresh
     }
 
     /**
@@ -187,11 +210,27 @@ class JenkinsService(private val project: Project) : Disposable {
      * "no proxy", not "whatever the JVM was started with".
      */
     private fun proxySelector(state: StagecraftState): ProxySelector =
-        if (state.useProxy) {
-            HttpConfigurable.getInstance().onlyBySettingsSelector
-        } else {
-            ProxySelector.of(null)
+        if (state.useProxy) ideProxySelector() else ProxySelector.of(null)
+
+    /**
+     * 2024.2 replaced `HttpConfigurable` with `JdkProxyProvider`, and the old class is deprecated
+     * for removal. The new one is looked up reflectively so the plugin keeps loading on every IDE
+     * from the floor up, whichever of the two that IDE has; the old one is the fallback, not the
+     * default.
+     */
+    private fun ideProxySelector(): ProxySelector =
+        try {
+            val provider = Class.forName("com.intellij.util.net.JdkProxyProvider")
+            val instance = provider.getMethod("getInstance").invoke(null)
+            provider.getMethod("getProxySelector").invoke(instance) as ProxySelector
+        } catch (_: ReflectiveOperationException) {
+            legacyProxySelector()
+        } catch (_: LinkageError) {
+            legacyProxySelector()
         }
+
+    @Suppress("DEPRECATION")
+    private fun legacyProxySelector(): ProxySelector = HttpConfigurable.getInstance().onlyBySettingsSelector
 
     /**
      * "Trust this server's certificate" means "use the IDE's trust store", which already holds the

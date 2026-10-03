@@ -30,12 +30,15 @@ sealed interface CredentialPlan {
     data object RequiresToken : CredentialPlan
 
     /**
-     * @param forget the server whose stored token this edit makes stale, or null when the address
-     *   did not move and nothing has to be removed.
+     * @param forget the stored credential this edit makes stale, or null when the address did not
+     *   move and nothing has to be removed.
      * @param store the credential to store, or null when the edit kept the token already there.
      */
-    data class Changes(val forget: String?, val store: StoredCredential?) : CredentialPlan
+    data class Changes(val forget: CredentialKey?, val store: StoredCredential?) : CredentialPlan
 }
+
+/** Which stored credential: tokens are kept per server and per user. */
+data class CredentialKey(val serverUrl: String, val user: String)
 
 /** A token and the Jenkins user it belongs to, as the password safe keeps them. */
 data class StoredCredential(val serverUrl: String, val user: String, val token: String)
@@ -58,7 +61,7 @@ fun credentialPlan(
 ): CredentialPlan {
     if (url.isEmpty()) {
         // Clearing the address unconfigures the project, so the token it was using goes with it.
-        return CredentialPlan.Changes(forget = previousUrl.ifEmpty { null }, store = null)
+        return CredentialPlan.Changes(forget = previousKey(previousUrl, previousUser), store = null)
     }
     val credentialStillApplies = previousUrl == url && previousUser == user
     if (enteredToken.isEmpty()) {
@@ -69,9 +72,12 @@ fun credentialPlan(
         }
     }
     return CredentialPlan.Changes(
-        // The entry is keyed on the address, so a moved address is the only case that leaves one
-        // behind for a later connection to find.
-        forget = previousUrl.takeIf { it != url && it.isNotEmpty() },
+        // A moved address leaves the old server's token behind for nothing, so it goes. A changed
+        // user does not: entries are keyed per user, and another project may still use that one.
+        forget = previousKey(previousUrl, previousUser).takeIf { previousUrl != url },
         store = StoredCredential(url, user, enteredToken),
     )
 }
+
+private fun previousKey(previousUrl: String, previousUser: String): CredentialKey? =
+    if (previousUrl.isEmpty()) null else CredentialKey(previousUrl, previousUser)

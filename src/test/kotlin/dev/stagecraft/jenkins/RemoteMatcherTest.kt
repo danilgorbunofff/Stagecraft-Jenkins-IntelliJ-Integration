@@ -155,8 +155,22 @@ class RemoteMatcherTest {
     }
 
     @Test
-    fun `a branch with no indexed child still names the parent, uncertainly`() {
+    fun `a branch with no indexed child under a container is unresolved, not the container's builds`() {
+        // A multibranch project has no builds of its own. Naming it would list nothing and say
+        // "svc has no builds yet" about a branch that may have failed builds Jenkins already holds.
         val index = JobIndex.of(listOf(testJob(listOf("svc"), MULTIBRANCH_CLASS)))
+
+        val match = RemoteMatcher(index).match("https://github.com/corp/svc.git", branch = "feature/nope")
+
+        assertTrue(match is RemoteMatcher.MatchResult.Unresolved, match.toString())
+        assertTrue(match.explanation.contains("feature/nope"), match.explanation)
+        assertTrue(match.explanation.contains("\"svc\""), match.explanation)
+    }
+
+    @Test
+    fun `a branch with no indexed child still names a plain job, uncertainly`() {
+        // One pipeline job for every branch is a real layout; its builds may be the branch's.
+        val index = JobIndex.of(listOf(testJob(listOf("svc"), WORKFLOW_CLASS)))
 
         val match = RemoteMatcher(index).match("https://github.com/corp/svc.git", branch = "feature/nope")
             as RemoteMatcher.MatchResult.Matched
@@ -282,5 +296,83 @@ class RemoteMatcherTest {
                 null,
             )
         }
+    }
+
+    // --------------------------------------------------------------- audit regressions
+
+    private val orgFolder = "jenkins.branch.OrganizationFolder"
+
+    private fun twoOrgs(first: String, second: String) = JobIndex.of(
+        listOf(
+            testJob(listOf(first), orgFolder),
+            testJob(listOf(first, "api"), MULTIBRANCH_CLASS),
+            testJob(listOf(first, "api", "main"), WORKFLOW_CLASS),
+            testJob(listOf(second), orgFolder),
+            testJob(listOf(second, "api"), MULTIBRANCH_CLASS),
+            testJob(listOf(second, "api", "main"), WORKFLOW_CLASS),
+        ),
+    )
+
+    @Test
+    fun `the organisation decides between two repositories of one name`() {
+        val match = RemoteMatcher(twoOrgs("alpha-org", "zeta-org")).match("git@github.com:zeta-org/api.git", "main")
+            as RemoteMatcher.MatchResult.Matched
+
+        assertEquals("zeta-org/api/main", match.job.fullName)
+        assertTrue(match.certain)
+    }
+
+    @Test
+    fun `two candidates the evidence cannot tell apart are never certain`() {
+        // Neither folder is named like the remote's organisation: picking one is a coin toss.
+        val match = RemoteMatcher(twoOrgs("team-a", "team-b")).match("git@github.com:corp/api.git", "main")
+            as RemoteMatcher.MatchResult.Matched
+
+        assertFalse(match.certain)
+        assertTrue(match.how.contains("team-b/api"), match.how)
+        assertTrue(match.how.contains("pin"), match.how)
+    }
+
+    @Test
+    fun `a pinned folder with a space builds a branch path jenkins will answer`() {
+        val folder = testJob(listOf("My Folder"), MULTIBRANCH_CLASS)
+        val remote = "git@github.com:corp/svc.git"
+        val index = JobIndex.of(listOf(folder), serverUrl = "https://ci")
+            .withPin(RemoteInfo.parse(remote)!!.key, folder)
+
+        val match = RemoteMatcher(index).match(remote, "feature/new") as RemoteMatcher.MatchResult.Matched
+
+        assertEquals(listOf("My Folder", "feature%2Fnew"), match.job.rawPath)
+        assertEquals("https://ci/job/My%20Folder/job/feature%252Fnew/", match.job.url)
+        assertTrue(match.pinned)
+    }
+
+    @Test
+    fun `hosting-specific spellings of one repository compare equal`() {
+        fun key(remote: String) = RemoteInfo.parse(remote)?.key
+
+        // Bitbucket Server / Data Center: /scm/ over HTTPS, port 7999 over SSH.
+        assertEquals(key("https://bitbucket.corp/scm/proj/repo.git"), key("ssh://git@bitbucket.corp:7999/proj/repo.git"))
+        // Azure DevOps: _git over HTTPS, ssh.dev.azure.com:v3 over SSH.
+        assertEquals(key("https://dev.azure.com/org/proj/_git/repo"), key("git@ssh.dev.azure.com:v3/org/proj/repo"))
+        assertEquals(key("https://me@dev.azure.com/org/proj/_git/repo"), key("git@ssh.dev.azure.com:v3/org/proj/repo"))
+        // scp syntax with the user left to ~/.ssh/config.
+        assertEquals(key("git@github.com:org/repo.git"), key("github.com:org/repo.git"))
+        // A Windows path is a local repository, not a host called "C".
+        assertNull(RemoteInfo.parse("C:\\repos\\svc"))
+    }
+
+    @Test
+    fun `the one-build confirmation looks past an ssh host alias`() {
+        val fake = FakeTransport()
+        fake.onGetPrefix(
+            base + "job/svc/job/main/1/api/json",
+            Fixtures.of("""{"actions":[{"_class":"hudson.plugins.git.util.BuildData","remoteUrls":["https://github.com/corp/svc.git"]}]}"""),
+        )
+        val client = JenkinsClient(base, JenkinsAuth(JenkinsCredential.ApiToken("admin", "token")), fake)
+
+        val confirmation = confirmWithBuild(client, base + "job/svc/job/main/1/", RemoteInfo.parse("git@github-work:corp/svc.git")!!)
+
+        assertTrue(confirmation.remoteMatches)
     }
 }

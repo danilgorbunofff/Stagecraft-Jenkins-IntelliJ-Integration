@@ -77,7 +77,7 @@ class CredentialPlanTest {
     fun `a moved address forgets the token it can no longer use`() {
         assertEquals(
             CredentialPlan.Changes(
-                forget = "https://ci.example.com/",
+                forget = CredentialKey("https://ci.example.com/", "admin"),
                 store = StoredCredential("https://ci.internal/", "admin", "new"),
             ),
             plan(url = "https://ci.internal/", enteredToken = "new"),
@@ -87,7 +87,7 @@ class CredentialPlanTest {
     @Test
     fun `clearing the address forgets the token`() {
         assertEquals(
-            CredentialPlan.Changes(forget = "https://ci.example.com/", store = null),
+            CredentialPlan.Changes(forget = CredentialKey("https://ci.example.com/", "admin"), store = null),
             plan(url = ""),
         )
     }
@@ -95,7 +95,7 @@ class CredentialPlanTest {
     @Test
     fun `clearing the address forgets the token even when one was typed`() {
         assertEquals(
-            CredentialPlan.Changes(forget = "https://ci.example.com/", store = null),
+            CredentialPlan.Changes(forget = CredentialKey("https://ci.example.com/", "admin"), store = null),
             plan(url = "", enteredToken = "new"),
         )
     }
@@ -122,6 +122,15 @@ class CredentialPlanTest {
                 user = "admin",
                 enteredToken = "new",
             ),
+        )
+    }
+
+    @Test
+    fun `a changed user with a new token keeps the other user's entry`() {
+        // Entries are per user now: another project may still authenticate as the old user.
+        assertEquals(
+            CredentialPlan.Changes(forget = null, store = StoredCredential("https://ci.example.com/", "bob", "new")),
+            plan(user = "bob", enteredToken = "new"),
         )
     }
 }

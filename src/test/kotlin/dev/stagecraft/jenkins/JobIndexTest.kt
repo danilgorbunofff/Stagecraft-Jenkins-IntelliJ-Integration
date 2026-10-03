@@ -9,6 +9,7 @@ import java.nio.file.Files
 import kotlin.system.measureTimeMillis
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -226,5 +227,51 @@ class JobIndexTest {
         }
 
         assertTrue(elapsed < 500, "matching took $elapsed ms; the exit criterion is 500")
+    }
+
+    // --------------------------------------------------------------- audit regressions
+
+    @Test
+    fun `a pinned name is used verbatim, so a space is encoded exactly once`() {
+        val job = jobFromName("My Folder/svc/feature%2FORD-214", "https://ci/")
+
+        assertEquals(listOf("My Folder", "svc", "feature%2FORD-214"), job.rawPath)
+        assertEquals("https://ci/job/My%20Folder/job/svc/job/feature%252FORD-214/", job.url)
+        assertEquals("My Folder/svc/feature/ORD-214", job.fullName)
+    }
+
+    @Test
+    fun `a job filed under a folder named like the organisation ranks first`() {
+        val org = "jenkins.branch.OrganizationFolder"
+        val index = JobIndex.of(
+            listOf(
+                testJob(listOf("alpha-org"), org),
+                testJob(listOf("alpha-org", "api"), MULTIBRANCH_CLASS),
+                testJob(listOf("zeta-org"), org),
+                testJob(listOf("zeta-org", "api"), MULTIBRANCH_CLASS),
+            ),
+        )
+
+        val ranked = index.rank(RemoteInfo.parse("git@github.com:zeta-org/api.git")!!)
+
+        assertEquals("zeta-org/api", ranked.first().job.fullName)
+        assertTrue(ranked.first().underOrg)
+        assertFalse(ranked.first().tiesWith(ranked[1]))
+    }
+
+    @Test
+    fun `saving leaves no temporary file behind`() {
+        val dir = java.nio.file.Files.createTempDirectory("stagecraft-index").toFile()
+        try {
+            val index = JobIndex.of(listOf(testJob(listOf("svc"), MULTIBRANCH_CLASS)), serverUrl = "https://ci")
+            JobIndex.save(dir, index)
+            JobIndex.save(dir, index)
+
+            val files = JobIndex.cacheFile(dir, "https://ci").parentFile.listFiles()!!.map { it.name }
+            assertEquals(1, files.size, files.toString())
+            assertEquals(1, JobIndex.load(dir, "https://ci")!!.jobs.size)
+        } finally {
+            dir.deleteRecursively()
+        }
     }
 }

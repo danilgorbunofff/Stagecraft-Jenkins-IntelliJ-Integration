@@ -6,6 +6,9 @@ import dev.stagecraft.model.JobKind
 import dev.stagecraft.model.JobNode
 import java.io.OutputStream
 
+/** A job tree and whether it is all of it: false when [JenkinsClient.jobTreeDeep] stopped early. */
+data class JobTree(val jobs: List<JobNode>, val complete: Boolean)
+
 /** Who Jenkins says we are. */
 data class MeInfo(val id: String, val fullName: String?)
 
@@ -51,16 +54,30 @@ class JenkinsClient(
         return MeInfo(id, obj.str("fullName"))
     }
 
-    /** Verify the credentials against the configured user, throwing a readable error if not. */
+    /**
+     * Verify the credentials against the configured user, throwing a readable error if not.
+     *
+     * Two different failures hide behind "the id is not the one we configured", and they need
+     * different fixes, so they get different messages: `anonymous` means the credentials were not
+     * applied at all (the server lets anonymous users read), while any other id means the token
+     * authenticates a *different* account. Ids compare case-insensitively, as Jenkins' default user
+     * id strategy does - `JDoe` and `jdoe` are the same Jenkins user.
+     */
     fun verifyCredentials(): MeInfo {
         val info = me()
         if (!http.auth.matchesConfiguredUser(info.id)) {
-            throw JenkinsException.Malformed(
-                JenkinsUrls.apiJson(http.baseUrl + "me/", "id"),
-                "Jenkins authenticated the request as '${info.id}', not as " +
-                    "'${http.auth.credential.user}'. The server is answering anonymous or " +
-                    "unauthenticated reads, so this connection is not actually authenticated.",
-            )
+            val url = JenkinsUrls.apiJson(http.baseUrl + "me/", "id")
+            val user = http.auth.credential.user
+            val detail = if (info.id.equals(ANONYMOUS_ID, ignoreCase = true)) {
+                "Jenkins answered as 'anonymous', not as '$user'. The server lets anonymous users " +
+                    "read, so the credentials were not applied and this connection is not actually " +
+                    "authenticated. Check the user name and the API token."
+            } else {
+                "Jenkins authenticated the request as '${info.id}', not as '$user'. The " +
+                    "${http.auth.credential.description} belongs to a different Jenkins account; use " +
+                    "the user name it was issued for."
+            }
+            throw JenkinsException.Malformed(url, detail)
         }
         return info
     }
@@ -84,6 +101,45 @@ class JenkinsClient(
     }
 
     /**
+     * The whole job tree, however deep: [jobTree] for the first [DEFAULT_TREE_DEPTH] levels, then one
+     * more bounded request for every container that sits on the last level fetched (§9.4 step 1:
+     * recurse into anything that holds jobs). In the usual layouts - a multibranch project at the
+     * root or in one folder, an organisation folder at the root - nothing sits that deep and this is
+     * the single request [jobTree] makes. A `folder/folder/multibranch` costs one more.
+     *
+     * The walk stops once more than [maxJobs] jobs are known or [maxSubtreeRequests] follow-up
+     * requests have been spent, and says so through [JobTree.complete] instead of pretending the
+     * tree ended there. A subtree the account may not read (404, Day-0 re-check R7) is skipped.
+     */
+    fun jobTreeDeep(
+        maxJobs: Int = Int.MAX_VALUE,
+        maxSubtreeRequests: Int = DEFAULT_MAX_SUBTREE_REQUESTS,
+    ): JobTree {
+        val jobs = ArrayList(jobTree(DEFAULT_TREE_DEPTH))
+        val frontier = ArrayDeque(jobs.filter { it.isContainer && it.depth == DEFAULT_TREE_DEPTH })
+        var spent = 0
+        while (frontier.isNotEmpty()) {
+            if (jobs.size > maxJobs || spent >= maxSubtreeRequests) return JobTree(jobs, complete = false)
+            val container = frontier.removeFirst()
+            spent++
+            val below = try {
+                subtree(container, DEFAULT_TREE_DEPTH)
+            } catch (_: JenkinsException.NotFound) {
+                continue
+            }
+            jobs += below
+            below.filterTo(frontier) { it.isContainer && it.depth == container.depth + DEFAULT_TREE_DEPTH }
+        }
+        return JobTree(jobs, complete = true)
+    }
+
+    private fun subtree(container: JobNode, depth: Int): List<JobNode> {
+        val url = JenkinsUrls.apiJson(JenkinsUrls.jobUrl(http.baseUrl, container.rawPath), nestedJobTree(depth))
+        val displayPath = container.rawPath.map { JenkinsUrls.decodeSegment(it) }
+        return parseTree(url, http.get(url), container.rawPath, displayPath, container.depth + 1, container.depth + depth)
+    }
+
+    /**
      * Direct children of a container job - the folders and, for a multibranch project, the branch
      * jobs. One request, same parser as [jobTree].
      */
@@ -96,7 +152,7 @@ class JenkinsClient(
 
     /** Recent builds of one job, newest first, as Jenkins orders them. */
     fun builds(rawPath: List<String>, limit: Int = DEFAULT_BUILD_LIMIT): List<BuildRef> {
-        val tree = "builds[_class,number,url,result,building,timestamp,duration]{0,$limit}"
+        val tree = "builds[_class,number,result,building,timestamp,duration]{0,$limit}"
         val url = JenkinsUrls.apiJson(JenkinsUrls.jobUrl(http.baseUrl, rawPath), tree)
         val obj = parseBody(url, http.get(url))
         val fullName = rawPath.joinToString("/") { JenkinsUrls.decodeSegment(it) }
@@ -106,10 +162,10 @@ class JenkinsClient(
                 jobFullName = fullName,
                 jobRawPath = rawPath,
                 number = number,
-                url = JenkinsUrls.rebase(
-                    http.baseUrl,
-                    build.str("url") ?: JenkinsUrls.jobUrl(http.baseUrl, rawPath) + "$number/",
-                ),
+                // Built, not rebased: the job's raw path and the number are all a build URL is,
+                // and a locally built URL cannot inherit a context path or host the server got
+                // wrong.
+                url = JenkinsUrls.jobUrl(http.baseUrl, rawPath) + "$number/",
                 status = BuildStatus.fromResult(build.str("result"), build.bool("building") ?: false),
                 timestampMillis = build.long("timestamp") ?: 0L,
                 durationMillis = build.long("duration") ?: 0L,
@@ -309,11 +365,17 @@ class JenkinsClient(
         /** §9.4 asks for three levels of recursion in one request. */
         const val DEFAULT_TREE_DEPTH = 3
 
+        /** Follow-up requests [jobTreeDeep] may spend on containers deeper than one request reaches. */
+        const val DEFAULT_MAX_SUBTREE_REQUESTS = 50
+
         const val DEFAULT_BUILD_LIMIT = 25
 
         /** Enough for a normal console, small enough that a runaway job cannot exhaust the heap. */
         const val DEFAULT_CONSOLE_BUFFER_LIMIT = 8L * 1024 * 1024
 
         private const val ERROR_BODY_LIMIT = 1L * 1024 * 1024
+
+        /** The id Jenkins reports for a request it did not authenticate. */
+        const val ANONYMOUS_ID = "anonymous"
     }
 }

@@ -32,9 +32,9 @@ import javax.swing.JComponent
  * the settings dialog instead of being stored and discovered later as a mysterious failure in the
  * tool window.
  *
- * The token itself never crosses the EDT. [reset] asks [JenkinsService] for the stored token and
- * fills the field when the answer arrives, [apply] hands the write to the same I/O thread, and
- * [isModified] compares the field with the copy that read left behind - because the platform calls
+ * The token itself never crosses the EDT. [reset] asks [JenkinsService] whether a token is stored
+ * and says so in the help text, [apply] hands the write to the same I/O thread, and the token field
+ * only ever holds what the user typed - blank means "keep the stored token". The platform calls
  * [isModified] on the EDT on every keystroke, and `PasswordSafe` guards both `get` and `set` with
  * `SlowOperations` (§7.3 rule 2).
  */
@@ -44,8 +44,8 @@ class StagecraftConfigurable(private val project: Project) : Configurable {
     private val service = JenkinsService.getInstance(project)
 
     /**
-     * The token the password safe holds for the configured server, as of the last read. Empty until
-     * that read lands, which is why a blank field has to mean "keep what is stored".
+     * The token the password safe holds for the configured server and user, as of the last read.
+     * Only compared against, never shown: a blank field means "keep what is stored".
      */
     private var savedToken = ""
 
@@ -78,9 +78,9 @@ class StagecraftConfigurable(private val project: Project) : Configurable {
     }
 
     /**
-     * Fills the form from the project settings, and asks for the stored token rather than reading it:
-     * a read here would run on the EDT, where the password safe refuses to be touched. The field is
-     * filled when the answer arrives, and a user who starts typing before that is never overwritten.
+     * Fills the form from the project settings, and asks whether a token is stored rather than reading
+     * it: a read here would run on the EDT, where the password safe refuses to be touched. The token
+     * field itself always starts blank.
      */
     override fun reset() {
         val state = settings.state
@@ -94,10 +94,13 @@ class StagecraftConfigurable(private val project: Project) : Configurable {
         savedTokenKnown = false
         updateTokenHelp()
         if (state.serverUrl.isNotEmpty()) {
-            service.readToken(state.serverUrl) { token ->
+            // The answer only tells the help text whether a token is stored. It is never put into the
+            // field: a blank field is what "keep the stored token" means, and a pre-filled one would
+            // be read as a newly typed token - which would carry this server's token to a new address
+            // or a new user the moment either is edited, the very thing [credentialPlan] refuses.
+            service.readToken(state.serverUrl, state.user) { token ->
                 savedToken = token
                 savedTokenKnown = true
-                if (secret.password.isEmpty()) secret.text = token
                 updateTokenHelp()
             }
         }
@@ -133,10 +136,11 @@ class StagecraftConfigurable(private val project: Project) : Configurable {
             throw ConfigurationException("Give the user name the token belongs to.")
         }
         val previousUrl = state.serverUrl
+        val previousUser = state.user
         val enteredSecret = String(secret.password)
         val plan = credentialPlan(
             previousUrl = previousUrl,
-            previousUser = state.user,
+            previousUser = previousUser,
             url = url,
             user = name,
             enteredToken = enteredSecret,
@@ -164,7 +168,7 @@ class StagecraftConfigurable(private val project: Project) : Configurable {
         secret.text = ""
         savedToken = when {
             enteredSecret.isNotEmpty() -> enteredSecret
-            url == previousUrl -> savedToken
+            url == previousUrl && name == previousUser -> savedToken
             else -> ""
         }
         savedTokenKnown = true
@@ -177,7 +181,7 @@ class StagecraftConfigurable(private val project: Project) : Configurable {
      * so the failure is logged and the reload that follows reports what the server actually says.
      */
     private fun write(changes: CredentialPlan.Changes) {
-        changes.forget?.let { service.credentials.clear(it) }
+        changes.forget?.let { service.credentials.clear(it.serverUrl, it.user) }
         changes.store?.let { service.credentials.save(it.serverUrl, it.user, it.token) }
     }
 

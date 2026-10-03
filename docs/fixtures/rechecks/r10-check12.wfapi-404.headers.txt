@@ -3,7 +3,7 @@ Server: Jetty(12.0.16)
 Date: Fri, 02 Oct 2026 05:46:27 GMT
 X-Content-Type-Options: nosniff
 Cache-Control: no-cache,no-store,must-revalidate
-Set-Cookie: JSESSIONID.387e5d5b=node019wox7fnh8wap15bsfgxudri7j2.node0; Path=/; HttpOnly
+Set-Cookie: JSESSIONID.387e5d5b=REDACTED.node0; Path=/; HttpOnly
 Expires: 0
 Content-Type: text/html;charset=utf-8
 X-Hudson-Theme: default

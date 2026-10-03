@@ -1,5 +1,6 @@
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import org.jetbrains.kotlin.gradle.dsl.KotlinVersion
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 plugins {
@@ -35,31 +36,37 @@ dependencies {
     testRuntimeOnly(libs.junit.platform.launcher)
 }
 
-// §9.1 JVM target trap: the toolchain may be 21, the bytecode may not.
-// 2023.x - 2024.1 IDEs run on Java 17, so anything below since-build 242 must be Java 17.
+// §9.1 compatibility floor: 2024.2 (since-build 242).
 //
-// jvmTarget is set on the compile tasks rather than in the `kotlin` extension on purpose:
-// jvmToolchain(21) resolves late and resets the extension-level target to 21, which then trips
-// Gradle's "Inconsistent JVM-target compatibility" check against compileJava. Task-level
-// configuration is applied last, so it is the value that survives.
+// The floor is set by the Kotlin standard library, not by the JVM. A plugin never bundles its own
+// stdlib - it runs on the one the IDE ships - and Kotlin 2.4 can only emit code for a stdlib of 2.0
+// or newer ("API version 1.8 is no longer supported"). 2024.2 is the first IDE that ships Kotlin
+// 2.0, so it is the oldest IDE this build can honestly claim. Below it, every enum's static
+// initializer calls `kotlin.enums.EnumEntriesKt` (Kotlin 1.9+) and the plugin dies with
+// NoClassDefFoundError on 2023.1-2023.2.
+//
+// apiVersion pins the stdlib surface to what 2024.2 ships, so the compiler rejects any newer call
+// instead of leaving it to fail at runtime on the oldest supported IDE. 2024.2 also runs on Java 21,
+// so the old Java 17 bytecode workaround is gone.
 kotlin {
     jvmToolchain(21)
 }
 
 tasks.withType<JavaCompile>().configureEach {
-    options.release = 17
+    options.release = 21
 }
 
 tasks.withType<KotlinCompile>().configureEach {
     compilerOptions {
-        jvmTarget = JvmTarget.JVM_17
+        jvmTarget = JvmTarget.JVM_21
+        apiVersion = KotlinVersion.KOTLIN_2_0
     }
 }
 
 intellijPlatform {
     pluginConfiguration {
         ideaVersion {
-            sinceBuild = "231"
+            sinceBuild = "242"
             untilBuild = provider { null }
         }
     }

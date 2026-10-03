@@ -34,15 +34,26 @@ data class RemoteInfo(
     /** Is [other] another spelling of the same repository? */
     fun matches(other: RemoteInfo): Boolean = key.equals(other.key, ignoreCase = true)
 
+    /** The repository's path on its host, `subpath/org/repo`, without the host. */
+    val pathKey: String get() = key.substringAfter('/')
+
+    /**
+     * Same repository path, host aside. Used where the two sides legitimately name the host
+     * differently - the developer's SSH alias (`git@github-work:org/repo`) against the URL the
+     * Jenkins agent cloned - and a false "this is not your repository" would be worse than the
+     * vanishing chance of two hosts holding the same `org/repo`.
+     */
+    fun samePath(other: RemoteInfo): Boolean = pathKey.equals(other.pathKey, ignoreCase = true)
+
     companion object {
 
         fun parse(raw: String): RemoteInfo? {
             val trimmed = raw.trim().substringBefore('#').substringBefore('?')
             if (trimmed.isEmpty()) return null
 
-            val host: String
+            var host: String
             val path: String
-            val scp = SCP.matchEntire(trimmed)
+            val scp = if (trimmed.contains("://")) null else SCP.matchEntire(trimmed)
             if (scp != null) {
                 host = scp.groupValues[1]
                 path = scp.groupValues[2]
@@ -52,18 +63,20 @@ data class RemoteInfo(
                 path = url.groupValues[2]
             }
             if (host.isBlank()) return null
+            host = host.lowercase()
 
             var value = path.trim().trimStart('/').trimEnd('/')
             if (value.substringAfterLast('/').endsWith(".git")) value = value.removeSuffix(".git")
-            val segments = value.split('/').filter { it.isNotEmpty() }
+            val segments = canonicalSegments(host, value.split('/').filter { it.isNotEmpty() }).toMutableList()
             if (segments.isEmpty()) return null
+            host = canonicalHost(host)
 
             return when (segments.size) {
-                1 -> RemoteInfo(raw, host.lowercase(), "", segments[0])
-                2 -> RemoteInfo(raw, host.lowercase(), segments[0], segments[1])
+                1 -> RemoteInfo(raw, host, "", segments[0])
+                2 -> RemoteInfo(raw, host, segments[0], segments[1])
                 else -> RemoteInfo(
                     raw,
-                    host.lowercase(),
+                    host,
                     segments[segments.size - 2],
                     segments.last(),
                     subpath = segments.take(segments.size - 2).joinToString("/"),
@@ -71,8 +84,35 @@ data class RemoteInfo(
             }
         }
 
-        /** `git@github.com:org/repo.git` — the scp syntax git documents first. */
-        private val SCP = Regex("^(?:[^@/]+)@([^:/]+):(.+)$")
+        /**
+         * Hosting-specific spellings of one repository, folded together so the HTTPS and SSH remotes
+         * of the same repository compare equal:
+         *
+         *  * Bitbucket Server / Data Center clones over HTTPS from `/scm/PROJ/repo` and over SSH from
+         *    `/PROJ/repo` - the `scm` prefix is dropped;
+         *  * Azure DevOps clones over HTTPS from `dev.azure.com/org/project/_git/repo` and over SSH
+         *    from `ssh.dev.azure.com:v3/org/project/repo` - the `_git` marker and the `v3` prefix are
+         *    dropped, and the SSH host is the HTTPS host.
+         */
+        private fun canonicalSegments(host: String, segments: List<String>): List<String> {
+            var result = segments
+            if (result.size >= 3 && result.first().equals("scm", ignoreCase = true)) result = result.drop(1)
+            if (host == AZURE_SSH_HOST && result.firstOrNull() == "v3") result = result.drop(1)
+            if (host == AZURE_HOST || host == AZURE_SSH_HOST) result = result.filter { it != "_git" }
+            return result
+        }
+
+        private fun canonicalHost(host: String): String = if (host == AZURE_SSH_HOST) AZURE_HOST else host
+
+        private const val AZURE_HOST = "dev.azure.com"
+        private const val AZURE_SSH_HOST = "ssh.dev.azure.com"
+
+        /**
+         * `git@github.com:org/repo.git` — the scp syntax git documents first. The user is optional
+         * (`github.com:org/repo.git` with the user in `~/.ssh/config`); a one-letter "host" is a
+         * Windows drive (`C:\repos\x`), which git reads as a local path, so it is not a remote.
+         */
+        private val SCP = Regex("^(?:[^@/]+@)?([^:/\\\\]{2,}):(.+)$")
 
         /** `[scheme://][user@]host[:port]/path` — http, https, ssh, git. `file://` has no host. */
         private val URL_FORM =
@@ -113,6 +153,8 @@ class RemoteMatcher(
             val certain: Boolean,
             val branch: String? = null,
             val branchJob: JobNode? = null,
+            /** The user chose this job in settings; nothing about it is inferred. */
+            val pinned: Boolean = false,
         ) : MatchResult {
             override val explanation: String get() = how
         }
@@ -130,11 +172,7 @@ class RemoteMatcher(
 
         val ranked = index.rank(remote)
         if (ranked.isEmpty()) {
-            val missing = if (index.truncated) {
-                " The index holds ${index.jobs.size} of ${index.totalSeen} jobs; pin your job manually for an exact match."
-            } else {
-                ""
-            }
+            val missing = index.truncationNote?.let { " $it" }.orEmpty()
             return MatchResult.Unresolved("no indexed job matches the repository \"${remote.repo}\".$missing")
         }
 
@@ -142,8 +180,21 @@ class RemoteMatcher(
         if (branch != null) return resolveBranch(ranked, branch, prLabel = null)
 
         val best = ranked.first()
-        return MatchResult.Matched(best.job, best.reason, certain = best.tier >= EXACT_NAME_TIER)
+        val rival = ranked.drop(1).firstOrNull { it.tiesWith(best) }
+        return MatchResult.Matched(
+            best.job,
+            best.reason + ambiguityNote(rival),
+            certain = best.tier >= EXACT_NAME_TIER && rival == null,
+        )
     }
+
+    /**
+     * Said whenever a second job carries exactly the same name evidence as the one we picked: the
+     * pick is then a coin toss, and showing it as certain would put somebody else's builds on screen
+     * with this plugin's confidence (two organisation folders that both hold an `api` repository).
+     */
+    private fun ambiguityNote(rival: JobIndex.RankedJob?): String =
+        if (rival == null) "" else "; \"${rival.job.fullName}\" matches just as well, so pin the right one in settings"
 
     /**
      * §9.4 step 5: a pin is a user decision, so it is answered before any tier is consulted.
@@ -158,37 +209,37 @@ class RemoteMatcher(
      * context, not something to descend into.
      */
     private fun pinnedMatch(pinned: JobNode, branch: String?): MatchResult {
-        if (branch == null) return MatchResult.Matched(pinned, PIN_HOW, certain = true)
+        if (branch == null) return MatchResult.Matched(pinned, PIN_HOW, certain = true, pinned = true)
 
         val how = "branch \"$branch\" of the job pinned in Stagecraft's settings (\"${pinned.displayName}\")"
 
         index.childNamed(pinned, branch)?.let { child ->
-            return MatchResult.Matched(child, how, certain = true, branch = branch, branchJob = child)
+            return MatchResult.Matched(child, how, certain = true, branch = branch, branchJob = child, pinned = true)
         }
         if (!pinned.isContainer && index.jobs.any { it.rawPath == pinned.rawPath }) {
-            return MatchResult.Matched(pinned, PIN_HOW, certain = true, branch = branch)
+            return MatchResult.Matched(pinned, PIN_HOW, certain = true, branch = branch, pinned = true)
         }
 
         // A path the user pinned is a path we can build: `.../job/<pinned>/job/<branch>`. It is
         // still certain, because a wrong path fails loudly with a 404 rather than quietly showing
         // somebody else's builds.
-        val child = jobFromName(pinned.rawPathString + "/" + JenkinsUrls.encodeSegment(branch), index.serverUrl)
-        return MatchResult.Matched(child, how, certain = true, branch = branch, branchJob = child)
+        val child = jobFromRawPath(pinned.rawPath + JenkinsUrls.encodeItemName(branch), index.serverUrl)
+        return MatchResult.Matched(child, how, certain = true, branch = branch, branchJob = child, pinned = true)
     }
 
     private fun resolvePr(remote: RemoteInfo, ranked: List<JobIndex.RankedJob>, prNumber: Int): MatchResult {
         val label = "PR-$prNumber"
         // Trap (a): a branch filed as a pull request has no branch job — the PR job itself is
         // what Jenkins builds, and its children carry the runs.
-        for (candidate in ranked.filter { it.job.isContainer }) {
-            val prJob = index.childNamed(candidate.job, label)
-            if (prJob != null) {
-                return MatchResult.Matched(
-                    prJob,
-                    "$label job of \"${candidate.job.displayName}\"",
-                    certain = candidate.tier >= EXACT_NAME_TIER,
-                )
-            }
+        val hits = childHits(ranked, label)
+        if (hits.isNotEmpty()) {
+            val (candidate, prJob) = hits.first()
+            val rival = hits.drop(1).firstOrNull { it.first.tiesWith(candidate) }?.first
+            return MatchResult.Matched(
+                prJob,
+                "$label job of \"${candidate.job.displayName}\"" + ambiguityNote(rival),
+                certain = candidate.tier >= EXACT_NAME_TIER && rival == null,
+            )
         }
         val source = prResolver?.sourceBranch(remote, prNumber)
         if (source != null) return resolveBranch(ranked, source, prLabel = label)
@@ -198,22 +249,36 @@ class RemoteMatcher(
     }
 
     private fun resolveBranch(ranked: List<JobIndex.RankedJob>, branch: String, prLabel: String?): MatchResult {
-        for (candidate in ranked.filter { it.job.isContainer }) {
-            val branchJob = index.childNamed(candidate.job, branch)
-            if (branchJob != null) {
-                val lead = prLabel?.let { "$it built from branch \"$branch\"" } ?: "branch \"$branch\""
-                return MatchResult.Matched(
-                    branchJob,
-                    "$lead — child of \"${candidate.job.displayName}\"",
-                    certain = candidate.tier >= EXACT_NAME_TIER,
-                    branch = branch,
-                    branchJob = branchJob,
-                )
-            }
+        val hits = childHits(ranked, branch)
+        if (hits.isNotEmpty()) {
+            val (candidate, branchJob) = hits.first()
+            val rival = hits.drop(1).firstOrNull { it.first.tiesWith(candidate) }?.first
+            val lead = prLabel?.let { "$it built from branch \"$branch\"" } ?: "branch \"$branch\""
+            return MatchResult.Matched(
+                branchJob,
+                "$lead — child of \"${candidate.job.displayName}\"" + ambiguityNote(rival),
+                certain = candidate.tier >= EXACT_NAME_TIER && rival == null,
+                branch = branch,
+                branchJob = branchJob,
+            )
         }
+
         val best = ranked.first()
         val lead = prLabel?.let { "$it could not be resolved to an indexed branch job" }
             ?: "branch \"$branch\" has no indexed job"
+        if (best.job.isContainer) {
+            // A container has no builds of its own: listing them would show an empty "has no
+            // builds yet" for a branch that may well have failed builds under a job the index
+            // has not seen. Say what is actually missing instead.
+            val note = index.truncationNote?.let { " $it" }.orEmpty()
+            return MatchResult.Unresolved(
+                "$lead under \"${best.job.fullName}\". Jenkins creates a branch job when it scans the " +
+                    "repository after the branch is pushed; until then there is nothing to show. If the " +
+                    "branch has builds, pin its job in settings.$note",
+            )
+        }
+        // A single plain job named like the repository (one pipeline for every branch) can still be
+        // the right place to look - but only as a guess.
         return MatchResult.Matched(
             best.job,
             "$lead; closest match by name is \"${best.job.displayName}\" (${best.reason})",
@@ -221,6 +286,11 @@ class RemoteMatcher(
             branch = branch,
         )
     }
+
+    /** Container candidates, best first, that hold a child named [childName], with that child. */
+    private fun childHits(ranked: List<JobIndex.RankedJob>, childName: String): List<Pair<JobIndex.RankedJob, JobNode>> =
+        ranked.filter { it.job.isContainer }
+            .mapNotNull { candidate -> index.childNamed(candidate.job, childName)?.let { candidate to it } }
 
     companion object {
         /** Tiers at or above this are exact-name evidence; below it the matcher is guessing. */
@@ -247,7 +317,7 @@ data class BuildConfirmation(
  * Confirm a matched job against the one build we are about to show (§9.4 step 3).
  *
  * Traps: `remoteUrls` is a list and there can be several BuildData actions, so remotes are
- * compared after [RemoteInfo] normalisation; `lastBuiltRevision.branch` may be absent entirely,
+ * compared after [RemoteInfo] normalisation, by repository path (see [RemoteInfo.samePath]); `lastBuiltRevision.branch` may be absent entirely,
  * which is reported as null rather than false. A 404 from Jenkins is a permissions question, not
  * a certainty, and is thrown as [JenkinsException.NotFound] untouched.
  */
@@ -267,7 +337,7 @@ fun confirmWithBuild(
             ?: emptyList()
     }
     return BuildConfirmation(
-        remoteMatches = found.any { it.matches(remote) },
+        remoteMatches = found.any { it.samePath(remote) },
         branchMatches = expectedBranch?.let { expected -> branches.any { recorded -> sameBranch(recorded, expected) } },
         foundRemoteUrls = urls,
         foundBranches = branches,

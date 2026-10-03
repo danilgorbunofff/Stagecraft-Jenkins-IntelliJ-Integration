@@ -74,9 +74,11 @@ private fun run(args: Array<String>, env: Map<String, String>, out: PrintStream,
         while (true) {
             val chunk = client.progressiveText(buildUrl, offset)
             if (chunk.resetDetected) {
+                // Day-0 re-check R1: an offset past the end of the log makes Jenkins resend the
+                // whole log from the start. Say so, rather than let the repeat pass for new output.
                 err.println(
                     "stagecraft: WARNING - the cursor moved backwards (asked for $offset, server said " +
-                        "${chunk.nextOffset}); the log restarted, so this chunk was not appended.",
+                        "${chunk.nextOffset}); Jenkins resent the log from the start, and it is printed again below.",
                 )
             }
             out.print(chunk.text)
@@ -92,6 +94,8 @@ private fun run(args: Array<String>, env: Map<String, String>, out: PrintStream,
             // `X-More-Data` is absent, not `false`, once a build has finished (Day-0 re-check R1).
             if (!chunk.moreData) break
             offset = chunk.nextOffset
+            // A running build: wait before asking again rather than hammer the server in a loop.
+            Thread.sleep(options.intervalMillis)
         }
         err.println("stagecraft: done - $totalBytes bytes in $chunks request(s)")
         return EXIT_OK
@@ -110,6 +114,9 @@ private fun run(args: Array<String>, env: Map<String, String>, out: PrintStream,
     } catch (e: JenkinsException) {
         err.println("stagecraft: ${e.message}")
         return EXIT_FAILURE
+    } catch (e: InterruptedException) {
+        err.println("stagecraft: interrupted")
+        return EXIT_FAILURE
     } finally {
         client.http.close()
     }
@@ -125,11 +132,15 @@ private const val EXIT_TRANSPORT = 6
 
 private const val DEFAULT_BASE_URL = "http://localhost:18080"
 
+/** Pause between polls of a running build. */
+private const val DEFAULT_INTERVAL_MILLIS = 2_000L
+
 private class Options(
     val baseUrl: String,
     val buildUrl: String?,
     val credential: JenkinsCredential?,
     val start: Long,
+    val intervalMillis: Long,
     val json: Boolean,
     val help: Boolean,
 )
@@ -138,6 +149,7 @@ private fun parseArgs(args: Array<String>, env: Map<String, String>): Options {
     var baseUrl = env["STAGECRAFT_URL"]?.takeIf { it.isNotBlank() } ?: DEFAULT_BASE_URL
     var buildUrl = env["STAGECRAFT_BUILD_URL"]?.takeIf { it.isNotBlank() }
     var start = 0L
+    var interval = DEFAULT_INTERVAL_MILLIS
     var json = false
     var help = false
 
@@ -147,6 +159,11 @@ private fun parseArgs(args: Array<String>, env: Map<String, String>): Options {
             arg == "--json" -> json = true
             arg.startsWith("--url=") -> buildUrl = arg.substringAfter('=')
             arg.startsWith("--base=") -> baseUrl = arg.substringAfter('=')
+            arg.startsWith("--interval=") -> {
+                val value = arg.substringAfter('=')
+                interval = value.toLongOrNull()?.takeIf { it > 0 }
+                    ?: throw IllegalArgumentException("--interval must be a positive number of milliseconds, not '$value'")
+            }
             arg.startsWith("--start=") -> {
                 val value = arg.substringAfter('=')
                 start = value.toLongOrNull() ?: throw IllegalArgumentException("--start must be a number, not '$value'")
@@ -168,13 +185,13 @@ private fun parseArgs(args: Array<String>, env: Map<String, String>): Options {
         else -> null
     }
 
-    return Options(baseUrl, buildUrl, credential, start, json, help)
+    return Options(baseUrl, buildUrl, credential, start, interval, json, help)
 }
 
 private fun usage(): String = """
     stagecraft - print a Jenkins build's console
 
-    Usage: consoleDump [buildUrl] [--url=<buildUrl>] [--base=<baseUrl>] [--start=N] [--json]
+    Usage: consoleDump [buildUrl] [--url=<buildUrl>] [--base=<baseUrl>] [--start=N] [--interval=ms] [--json]
 
     Environment:
       STAGECRAFT_USER        Jenkins user name                       (required)
