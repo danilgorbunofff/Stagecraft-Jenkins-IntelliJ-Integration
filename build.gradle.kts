@@ -65,9 +65,30 @@ tasks.withType<KotlinCompile>().configureEach {
 
 intellijPlatform {
     pluginConfiguration {
+        id = "dev.stagecraft.jenkins"
+        name = "Stagecraft"
+        description = provider {
+            "Stagecraft • Jenkins Build & Log Viewer. Your Jenkins build failed: see which stage " +
+                "broke, its log, and click the failing line straight into your editor - without " +
+                "leaving the IDE. Finds your job from the git remote, so it works with folders, " +
+                "multibranch jobs and thousands of jobs."
+        }
+        changeNotes = provider { "0.1.0 - first build: branch build list, stage view, bounded log with live tail, test results and jump-to-source, Jenkinsfile lint." }
+
+        // §8.2/§8.3: the listing's vendor and its permanent product code. The code is the
+        // candidate from the charter; it must be registered with JetBrains before a paid listing
+        // goes live, and it is permanent once it is.
+        vendor {
+            name = "Stagecraft"
+        }
         ideaVersion {
             sinceBuild = "242"
             untilBuild = provider { null }
+        }
+        productDescriptor {
+            code = "PSTAGECRAFT"
+            releaseDate = "20261003"
+            releaseVersion = "1"
         }
     }
     buildSearchableOptions = false
@@ -95,5 +116,20 @@ tasks.register<JavaExec>("consoleDump") {
     classpath = sourceSets.main.get().runtimeClasspath
     (findProperty("buildUrl") as String?)?.let { args(it) }
     (findProperty("start") as String?)?.let { args(it) }
+    standardInput = System.`in`
+}
+
+/**
+ * §11 Days 13-14: the compatibility-matrix probe. One run per (Jenkins version x configuration)
+ * cell; it exercises the exact API surface Stagecraft uses and prints PASS/FAIL/SKIP per check.
+ *
+ *   STAGECRAFT_USER=admin STAGECRAFT_TOKEN=... \
+ *     ./gradlew compatProbe --args="--base=http://localhost:18080 --build=http://localhost:18080/job/multibranch-demo/job/main/1/"
+ */
+tasks.register<JavaExec>("compatProbe") {
+    group = "stagecraft"
+    description = "Run the Day-13 compatibility probe against one Jenkins, one matrix cell at a time."
+    mainClass = "dev.stagecraft.cli.CompatProbeKt"
+    classpath = sourceSets.main.get().runtimeClasspath
     standardInput = System.`in`
 }

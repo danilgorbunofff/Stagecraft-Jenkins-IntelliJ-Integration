@@ -4,7 +4,7 @@
 > **Name on the Marketplace listing:** `Stagecraft • Jenkins Build & Log Viewer`
 > **Product code:** `PSTAGECRAFT` (candidate, not yet registered)
 > **Charter written:** 2026-10-01
-> **Status:** chartered; Day-0 gate executed 2026-10-01 — **PASS with deviations** ([`docs/day0-verification.md`](docs/day0-verification.md)). Days 1–12 done (285 tests; see [`docs/plan/`](docs/plan/)); Days 13–14 pending. Compatibility floor raised to IntelliJ 2024.2 (since-build 242) on 2026-10-03 — see §9.1. The Day-0 fixture repository is public on GitHub.
+> **Status:** chartered; Day-0 gate executed 2026-10-01 — **PASS with deviations** ([`docs/day0-verification.md`](docs/day0-verification.md)). **Days 1–14 code complete** (285 tests; see [`docs/plan/`](docs/plan/)). What remains is external, not code: the 25-cell compatibility run ([`docs/compat-matrix.md`](docs/compat-matrix.md)), the §7.6 acceptance test on a 1,000-job server, a sandbox `runIde` pass over Days 7–12, and the Marketplace vendor/paid-listing steps ([`docs/listing.md`](docs/listing.md)). Compatibility floor raised to IntelliJ 2024.2 (since-build 242) on 2026-10-03 — see §9.1. The Day-0 fixture repository is public on GitHub.
 > **Reviewed:** 2026-10-01. A strict review corrected several figures and the §9 technical design. Each corrected number states how it was computed.
 > **Method:** JetBrains Marketplace public API, Jenkins Update Center plugin API, and verbatim user reviews. Every integer in this document is an API's own returned value, or is computed from those values with the computation shown. None are made up. Scenario rows in §12.3 marked "assumed" are assumptions, labelled as such.
 

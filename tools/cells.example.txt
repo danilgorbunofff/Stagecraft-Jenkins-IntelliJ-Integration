@@ -1,0 +1,5 @@
+# Stagecraft compatibility-matrix cells.
+# One cell per line: name <TAB> baseUrl <TAB> buildUrl (buildUrl optional).
+# Run with: STAGECRAFT_USER=admin STAGECRAFT_TOKEN=... ./tools/compat-matrix.sh tools/cells.example.txt
+2.541.3 csrf-on-token	http://localhost:18080	http://localhost:18080/job/multibranch-demo/job/main/1/
+2.479.3 csrf-on-token	http://localhost:38080	http://localhost:38080/job/multibranch-demo/job/main/1/

@@ -1,0 +1,8 @@
+<svg width="40" height="40" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Stagecraft">
+  <rect x="2" y="2" width="36" height="36" rx="8" fill="#2C5AA0"/>
+  <rect x="9" y="10" width="22" height="5" rx="2.5" fill="#FFFFFF"/>
+  <rect x="9" y="18" width="22" height="5" rx="2.5" fill="#F26D6D"/>
+  <rect x="9" y="26" width="22" height="5" rx="2.5" fill="#FFFFFF" fill-opacity="0.55"/>
+  <circle cx="30" cy="20.5" r="6" fill="#2C5AA0"/>
+  <path d="M27.5 20.5 l2 2 l3.5 -4" stroke="#F26D6D" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
